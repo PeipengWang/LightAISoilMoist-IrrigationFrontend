@@ -12,6 +12,7 @@ const histProperties = ref<string[]>([])
 const histRange = ref('24h')
 const customStart = ref('')
 const customEnd = ref('')
+const MAX_PROPERTIES = 2
 
 const loading = ref(false)
 const chartCanvas = ref<HTMLCanvasElement | null>(null)
@@ -27,8 +28,16 @@ const records = ref<HistoryRecord[]>([])
 const totalCount = ref(0)
 const queryDone = ref(false)
 const queryError = ref('')
-const showChart = ref(true)
-const showTable = ref(true)
+
+// ==================== 视图切换 ====================
+type ViewMode = 'chart' | 'table'
+const viewMode = ref<ViewMode>('table')
+
+// ==================== 图表缺失数据 ====================
+interface GapSegment {
+  start: number
+  end: number
+}
 
 // ==================== 分页 ====================
 const currentPage = ref(1)
@@ -43,21 +52,14 @@ const paginatedRecords = computed(() => {
 const totalPages = computed(() => Math.ceil(records.value.length / pageSize.value))
 
 function goPage(p: number) {
-  if (p >= 1 && p <= totalPages.value) {
-    currentPage.value = p
-  }
+  if (p >= 1 && p <= totalPages.value) currentPage.value = p
 }
 
-watch([histDevice, histRange], () => {
-  currentPage.value = 1
-})
+watch([histDevice, histRange], () => { currentPage.value = 1 })
 
 // ==================== 设备/属性选项 ====================
 const deviceOptions = computed(() => {
-  return Object.keys(store.devicesMeta).map(name => ({
-    value: name,
-    label: name,
-  }))
+  return Object.keys(store.devicesMeta).map(name => ({ value: name, label: name }))
 })
 
 const propertyOptions = computed(() => {
@@ -71,17 +73,13 @@ const propertyOptions = computed(() => {
 
 const propertyNameMap = computed(() => {
   const map: Record<string, string> = {}
-  for (const p of propertyOptions.value) {
-    map[p.value] = p.label
-  }
+  for (const p of propertyOptions.value) map[p.value] = p.label
   return map
 })
 
 const propertyUnitMap = computed(() => {
   const map: Record<string, string> = {}
-  for (const p of propertyOptions.value) {
-    map[p.value] = p.unit
-  }
+  for (const p of propertyOptions.value) map[p.value] = p.unit
   return map
 })
 
@@ -100,9 +98,13 @@ watch(() => store.devicesMeta, () => {
   }
 }, { immediate: true })
 
-watch(histDevice, () => {
-  onDeviceChange()
-})
+watch(histDevice, () => { onDeviceChange() })
+
+function onPropertiesChange(vals: string[]) {
+  if (vals.length > MAX_PROPERTIES) {
+    histProperties.value = vals.slice(0, MAX_PROPERTIES)
+  }
+}
 
 // ==================== 时间范围 ====================
 const rangeOptions = [
@@ -137,9 +139,7 @@ function getTimeRange(): [number, number] {
 }
 
 // ==================== 图表颜色 ====================
-const chartColors = [
-  '#2e7d32', '#1565c0', '#e65100', '#7b1fa2', '#c62828', '#00838f', '#f9a825', '#4e342e',
-]
+const chartColors = ['#2e7d32', '#1565c0']
 
 // ==================== 查询历史 ====================
 const statsCards = ref<{ prop: string; name: string; max: number; min: number; avg: number }[]>([])
@@ -157,7 +157,6 @@ async function queryHistory() {
 
   const [start, end] = getTimeRange()
 
-  // 并发请求所有选中属性
   const results = await Promise.all(
     histProperties.value.map(async (prop) => {
       try {
@@ -170,7 +169,6 @@ async function queryHistory() {
     })
   )
 
-  // 检查是否有错误
   const errors = results.filter(r => r.error)
   if (errors.length > 0 && results.every(r => r.error)) {
     queryError.value = errors[0].error
@@ -179,7 +177,7 @@ async function queryHistory() {
     return
   }
 
-  // 合并数据：按时间点聚合
+  // 按时间点聚合
   const timeMap = new Map<string, Record<string, number>>()
   for (const r of results) {
     for (const item of r.list) {
@@ -189,7 +187,6 @@ async function queryHistory() {
     }
   }
 
-  // 排序并转为数组
   const sorted = Array.from(timeMap.entries())
     .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
 
@@ -214,15 +211,15 @@ async function queryHistory() {
     }
   })
 
-  // 汇总标题
   const rangeLabel = rangeOptions.find(r => r.value === histRange.value)?.label || '自定义'
-  const propNames = histProperties.value.map(p => propertyNameMap.value[p] || p).join('+')
+  const propNames = histProperties.value.map(p => propertyNameMap.value[p] || p).join(' + ')
   summaryTitle.value = `【${deviceOptions.value.find(d => d.value === histDevice.value)?.label || histDevice.value}】${propNames} - ${rangeLabel}`
 
   loading.value = false
   queryDone.value = true
+  viewMode.value = 'chart'
 
-  // 渲染图表（先 loading=false 让 canvas 出现在 DOM 中）
+  await nextTick()
   await nextTick()
   renderChart()
 }
@@ -233,6 +230,23 @@ function formatTime(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
+function detectGaps(prop: string): GapSegment[] {
+  const gaps: GapSegment[] = []
+  const MAX_GAP_COUNT = 20
+  for (let i = 1; i < records.value.length; i++) {
+    const prev = records.value[i - 1].values[prop]
+    const curr = records.value[i].values[prop]
+    if ((prev === undefined || isNaN(prev)) !== (curr === undefined || isNaN(curr))) {
+      if (gaps.length === 0 || gaps[gaps.length - 1].end !== i - 1) {
+        gaps.push({ start: i - 1, end: i })
+      } else {
+        gaps[gaps.length - 1].end = i
+      }
+    }
+  }
+  return gaps.filter(g => g.end - g.start <= MAX_GAP_COUNT)
+}
+
 // ==================== 图表渲染 ====================
 function renderChart() {
   if (chartInstance) { chartInstance.destroy(); chartInstance = null }
@@ -241,30 +255,173 @@ function renderChart() {
   const labels = records.value.map(r => r.timeStr)
   const isMulti = histProperties.value.length > 1
 
-  const datasets = histProperties.value.map((prop, i) => {
-    const data = records.value.map(r => r.values[prop] ?? NaN)
-    return {
-      label: `${propertyNameMap.value[prop] || prop} (${propertyUnitMap.value[prop] || ''})`,
-      data,
-      borderColor: chartColors[i % chartColors.length],
-      backgroundColor: isMulti ? 'transparent' : `${chartColors[i % chartColors.length]}15`,
-      fill: !isMulti,
-      tension: 0.3,
-      pointRadius: records.value.length > 200 ? 0 : 2,
-      pointHoverRadius: 5,
-      borderWidth: 2,
-    }
-  })
-
   // 自适应时间刻度
   const totalMs = records.value.length > 1
     ? new Date(records.value[records.value.length - 1].timeStr).getTime() - new Date(records.value[0].timeStr).getTime()
     : 0
   let maxTicks = 15
-  if (totalMs <= 3600000) maxTicks = 12       // ≤1h: 按5分钟
-  else if (totalMs <= 86400000) maxTicks = 24  // ≤1d: 按小时
-  else if (totalMs <= 604800000) maxTicks = 7  // ≤7d: 按天
-  else maxTicks = 15                            // >7d: 自动
+  if (totalMs <= 3600000) maxTicks = 12
+  else if (totalMs <= 86400000) maxTicks = 24
+  else if (totalMs <= 604800000) maxTicks = 7
+  else maxTicks = 12
+
+  const xTickCallback = (() => {
+    if (totalMs <= 86400000) {
+      return (val: string | number, index: number) => {
+        const label = labels[index]
+        return label ? label.slice(11, 16) : ''
+      }
+    }
+    if (totalMs <= 604800000) {
+      return (val: string | number, index: number) => {
+        const label = labels[index]
+        return label ? label.slice(5, 10) : ''
+      }
+    }
+    return undefined
+  })()
+
+  // 为每个属性计算值域范围
+  const propRanges = histProperties.value.map(prop => {
+    const vals = records.value.map(r => r.values[prop]).filter(v => v !== undefined && !isNaN(v)) as number[]
+    if (vals.length === 0) return { min: 0, max: 10 }
+    const min = Math.min(...vals)
+    const max = Math.max(...vals)
+    const padding = (max - min) * 0.1 || 1
+    return { min: min - padding, max: max + padding }
+  })
+
+  // 构建数据集：处理缺失值用虚线连接
+  const datasets: any[] = []
+  for (let i = 0; i < histProperties.value.length; i++) {
+    const prop = histProperties.value[i]
+    const color = chartColors[i]
+    const rawData = records.value.map(r => r.values[prop])
+
+    // 找出连续的有效段
+    const segments: { data: (number | null)[]; borderDash?: number[]; label: string; yAxisID: string }[] = []
+    let currentSeg: (number | null)[] = []
+    let hasGap = false
+
+    for (let j = 0; j < rawData.length; j++) {
+      const v = rawData[j]
+      if (v !== undefined && !isNaN(v)) {
+        currentSeg.push(v)
+      } else {
+        if (currentSeg.length > 0) {
+          segments.push({
+            data: currentSeg,
+            borderDash: undefined,
+            label: `${propertyNameMap.value[prop] || prop} (${propertyUnitMap.value[prop] || ''})`,
+            yAxisID: isMulti ? `y-${i}` : 'y',
+          })
+          currentSeg = []
+          hasGap = true
+        }
+        currentSeg.push(null) // NaN equivalent for gap
+      }
+    }
+    if (currentSeg.length > 0) {
+      segments.push({
+        data: currentSeg,
+        borderDash: undefined,
+        label: hasGap ? '' : `${propertyNameMap.value[prop] || prop} (${propertyUnitMap.value[prop] || ''})`,
+        yAxisID: isMulti ? `y-${i}` : 'y',
+      })
+    }
+
+    // 使用 spanGaps 处理缺失值
+    datasets.push({
+      label: `${propertyNameMap.value[prop] || prop} (${propertyUnitMap.value[prop] || ''})`,
+      data: rawData.map(v => (v !== undefined && !isNaN(v) ? v : null)),
+      borderColor: color,
+      backgroundColor: isMulti ? 'transparent' : `${color}15`,
+      fill: !isMulti,
+      tension: 0.3,
+      pointRadius: records.value.length > 200 ? 0 : 2,
+      pointHoverRadius: 5,
+      borderWidth: 2,
+      spanGaps: false,
+      segment: {
+        borderDash: (ctx: any) => {
+          // 如果前后点之间有null的跳变，说明是缺失数据区间，用虚线
+          const prev = ctx.p0 ? rawData[ctx.p0DataIndex] : undefined
+          const curr = ctx.p1 ? rawData[ctx.p1DataIndex] : undefined
+          if (prev === undefined || curr === undefined || isNaN(prev) || isNaN(curr)) return undefined
+          // Check if there's a gap between p0DataIndex and p1DataIndex
+          for (let k = ctx.p0DataIndex + 1; k < ctx.p1DataIndex; k++) {
+            const mv = rawData[k]
+            if (mv === undefined || isNaN(mv)) return [5, 3]
+          }
+          return undefined
+        },
+        borderColor: (ctx: any) => {
+          if (ctx.p1 && ctx.p1.parsed && ctx.p1.parsed.y !== undefined) return color
+          for (let k = ctx.p0DataIndex + 1; k < ctx.p1DataIndex; k++) {
+            const mv = rawData[k]
+            if (mv === undefined || isNaN(mv)) return '#bdbdbd'
+          }
+          return color
+        },
+      },
+      yAxisID: isMulti ? `y-${i}` : 'y',
+    })
+  }
+
+  // Y轴配置
+  const scalesConfig: any = {}
+
+  if (isMulti) {
+    // 左侧Y轴 - 第一个属性
+    scalesConfig['y-0'] = {
+      type: 'linear',
+      position: 'left',
+      title: {
+        display: true,
+        text: `${propertyUnitMap.value[histProperties.value[0]] || ''}`,
+        color: chartColors[0],
+      },
+      ticks: { font: { size: 10 }, color: chartColors[0] },
+      grid: { display: true },
+      min: propRanges[0].min,
+      max: propRanges[0].max,
+    }
+    // 右侧Y轴 - 第二个属性
+    scalesConfig['y-1'] = {
+      type: 'linear',
+      position: 'right',
+      title: {
+        display: true,
+        text: `${propertyUnitMap.value[histProperties.value[1]] || ''}`,
+        color: chartColors[1],
+      },
+      ticks: { font: { size: 10 }, color: chartColors[1] },
+      grid: { display: false },
+      min: propRanges[1].min,
+      max: propRanges[1].max,
+    }
+  } else {
+    scalesConfig['y'] = {
+      type: 'linear',
+      title: {
+        display: true,
+        text: `${propertyUnitMap.value[histProperties.value[0]] || ''}`,
+      },
+      ticks: { font: { size: 10 } },
+      min: propRanges[0].min,
+      max: propRanges[0].max,
+    }
+  }
+
+  // X轴配置
+  const xConfig: any = {
+    ticks: { maxTicksLimit: maxTicks, font: { size: 10 }, autoSkip: true, maxRotation: 45 },
+    grid: { display: false },
+  }
+  if (xTickCallback) {
+    xConfig.ticks.callback = xTickCallback
+  }
+  scalesConfig['x'] = xConfig
 
   chartInstance = new Chart(chartCanvas.value, {
     type: 'line',
@@ -272,35 +429,45 @@ function renderChart() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: {
-        mode: 'index',
-        intersect: false,
-      },
+      interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { display: true, position: 'top', labels: { boxWidth: 20, padding: 15, font: { size: 12 } } },
+        legend: {
+          display: true,
+          position: 'top',
+          labels: {
+            boxWidth: 20,
+            padding: 15,
+            font: { size: 12 },
+            filter: (item: any) => item.text !== '',
+          },
+        },
         tooltip: {
           enabled: true,
           callbacks: {
-            title: (items) => items[0]?.label || '',
+            title: (items) => {
+              return `采集时间：${items[0]?.label || ''}`
+            },
             label: (item) => {
-              const val = item.raw as number
-              return `${item.dataset.label}: ${isNaN(val) ? '无数据' : val.toFixed(2)}`
+              const val = item.raw as number | null
+              if (val === null) return `${item.dataset.label}: 无采集数据`
+              return `${item.dataset.label}: ${val.toFixed(2)}`
             },
           },
         },
       },
-      scales: {
-        x: {
-          ticks: { maxTicksLimit: maxTicks, font: { size: 10 }, autoSkip: true },
-          grid: { display: false },
-        },
-        y: {
-          ticks: { font: { size: 10 } },
-        },
-      },
+      scales: scalesConfig,
     },
   })
 }
+
+// 切换到图表视图时重新渲染
+watch(viewMode, async (mode) => {
+  if (mode === 'chart' && records.value.length > 0) {
+    await nextTick()
+    await nextTick()
+    renderChart()
+  }
+})
 
 function resetFilters() {
   histRange.value = '24h'
@@ -313,17 +480,13 @@ function resetFilters() {
   queryHistory()
 }
 
-function refreshLatest() {
-  store.refreshLatest()
-}
-
 // ==================== 导出 ====================
 function exportCSV() {
   if (records.value.length === 0) return
   const props = histProperties.value
   let csv = '﻿时间,' + props.map(p => propertyNameMap.value[p] || p).join(',') + '\n'
   for (const r of records.value) {
-    const vals = props.map(p => r.values[p] ?? '')
+    const vals = props.map(p => r.values[p] !== undefined && !isNaN(r.values[p]) ? r.values[p] : '--')
     csv += `${r.timeStr},${vals.join(',')}\n`
   }
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
@@ -335,12 +498,8 @@ function exportCSV() {
   URL.revokeObjectURL(url)
 }
 
-// ==================== 生命周期 ====================
 onUnmounted(() => {
-  if (chartInstance) {
-    chartInstance.destroy()
-    chartInstance = null
-  }
+  if (chartInstance) { chartInstance.destroy(); chartInstance = null }
 })
 </script>
 
@@ -350,30 +509,34 @@ onUnmounted(() => {
     <div class="card filter-card">
       <div class="card-header">
         <h3>📊 历史数据分析</h3>
-        <div class="header-actions">
-          <el-button size="small" @click="resetFilters">重置筛选条件</el-button>
-          <el-button size="small" plain @click="queryHistory" :loading="loading">查询</el-button>
-        </div>
       </div>
 
       <div class="filter-row">
         <div class="filter-item">
           <label>设备</label>
-          <el-select v-model="histDevice" size="small" style="width:200px">
+          <el-select v-model="histDevice" size="small" style="width:180px">
             <el-option v-for="d in deviceOptions" :key="d.value" :label="d.label" :value="d.value" />
           </el-select>
         </div>
 
         <div class="filter-item">
-          <label>属性（可多选）</label>
-          <el-select v-model="histProperties" size="small" multiple style="width:320px" placeholder="选择监测属性">
+          <label>属性（最多{{ MAX_PROPERTIES }}个）</label>
+          <el-select
+            v-model="histProperties"
+            size="small"
+            multiple
+            :multiple-limit="MAX_PROPERTIES"
+            style="width:280px"
+            placeholder="选择监测属性"
+            @change="onPropertiesChange"
+          >
             <el-option v-for="p in propertyOptions" :key="p.value" :label="`${p.label} (${p.unit})`" :value="p.value" />
           </el-select>
         </div>
 
         <div class="filter-item">
           <label>时间范围</label>
-          <el-select v-model="histRange" size="small" style="width:140px" @change="onRangeChange">
+          <el-select v-model="histRange" size="small" style="width:130px" @change="onRangeChange">
             <el-option v-for="r in rangeOptions" :key="r.value" :label="r.label" :value="r.value" />
             <el-option label="自定义" value="custom" />
           </el-select>
@@ -382,13 +545,25 @@ onUnmounted(() => {
         <template v-if="isCustomRange">
           <div class="filter-item">
             <label>开始时间</label>
-            <el-date-picker v-model="customStart" type="datetime" size="small" placeholder="选择开始时间" style="width:190px" format="YYYY-MM-DD HH:mm" />
+            <el-date-picker v-model="customStart" type="datetime" size="small" placeholder="开始时间" style="width:180px" format="YYYY-MM-DD HH:mm" />
           </div>
           <div class="filter-item">
             <label>结束时间</label>
-            <el-date-picker v-model="customEnd" type="datetime" size="small" placeholder="选择结束时间" style="width:190px" format="YYYY-MM-DD HH:mm" />
+            <el-date-picker v-model="customEnd" type="datetime" size="small" placeholder="结束时间" style="width:180px" format="YYYY-MM-DD HH:mm" />
           </div>
         </template>
+
+        <div class="filter-item filter-actions">
+          <label>&nbsp;</label>
+          <div class="filter-btns">
+            <el-button size="small" type="primary" @click="queryHistory" :loading="loading">
+              <span class="btn-icon">🔍</span> 查询
+            </el-button>
+            <el-button size="small" @click="resetFilters">
+              <span class="btn-icon">🔄</span> 重置
+            </el-button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -410,39 +585,54 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 图表区域 -->
-    <div class="card chart-card" v-if="queryDone || loading">
+    <!-- 图表/表格 同一卡片，Tab切换 -->
+    <div class="card view-card">
       <div class="card-header">
-        <h4>📈 趋势折线图</h4>
-        <el-switch v-if="records.length > 0" v-model="showChart" size="small" active-text="显示" inactive-text="隐藏" />
+        <div class="tab-bar">
+          <div
+            :class="['tab-item', { active: viewMode === 'table' }]"
+            @click="viewMode = 'table'"
+          >
+            📋 数据明细
+          </div>
+          <div
+            :class="['tab-item', { active: viewMode === 'chart' }]"
+            @click="viewMode = 'chart'"
+          >
+            📈 趋势折线图
+          </div>
+        </div>
+        <el-button v-if="viewMode === 'table' && records.length > 0" size="small" plain @click="exportCSV">导出 CSV</el-button>
       </div>
 
-      <div v-if="loading" class="chart-placeholder">
+      <!-- 加载中 -->
+      <div v-if="loading" class="view-placeholder">
         <div class="spinner"></div>
         <p>数据加载中...</p>
       </div>
-      <div v-else-if="queryError" class="chart-placeholder error">
+
+      <!-- 错误 -->
+      <div v-else-if="queryError" class="view-placeholder error">
         <p>⚠️ {{ queryError }}</p>
       </div>
-      <div v-else-if="records.length === 0" class="chart-placeholder">
+
+      <!-- 尚无查询 -->
+      <div v-else-if="!queryDone" class="view-placeholder">
+        <p>📊 请选择设备、属性并点击查询按钮，查看历史数据</p>
+      </div>
+
+      <!-- 无数据 -->
+      <div v-else-if="records.length === 0" class="view-placeholder">
         <p>📭 当前设备该时间段无采集数据，请更换筛选条件</p>
       </div>
-      <div v-show="showChart && records.length > 0" class="chart-container">
+
+      <!-- 图表视图 -->
+      <div v-show="viewMode === 'chart' && queryDone && records.length > 0" class="chart-container">
         <canvas ref="chartCanvas"></canvas>
       </div>
-    </div>
 
-    <!-- 明细表格 -->
-    <div class="card table-card" v-if="records.length > 0">
-      <div class="card-header">
-        <h4>📋 数据明细</h4>
-        <div class="header-actions">
-          <el-switch v-model="showTable" size="small" active-text="显示" inactive-text="隐藏" />
-          <el-button size="small" plain @click="exportCSV">导出 CSV</el-button>
-        </div>
-      </div>
-
-      <div v-show="showTable">
+      <!-- 表格视图 -->
+      <div v-show="viewMode === 'table' && (queryDone || records.length > 0)">
         <div class="table-wrapper">
           <table>
             <thead>
@@ -460,7 +650,14 @@ onUnmounted(() => {
               <tr v-for="(r, i) in paginatedRecords" :key="i">
                 <td class="time-cell">{{ r.timeStr }}</td>
                 <td v-for="prop in histProperties" :key="prop" class="value-cell">
-                  {{ r.values[prop] !== undefined ? r.values[prop].toFixed(1) : '--' }}
+                  <span
+                    v-if="r.values[prop] !== undefined && !isNaN(r.values[prop])"
+                  >{{ r.values[prop].toFixed(1) }}</span>
+                  <span
+                    v-else
+                    class="missing-cell"
+                    title="该时刻传感器未上报采集数据（设备离线/信号异常）"
+                  >--</span>
                 </td>
               </tr>
             </tbody>
@@ -522,13 +719,6 @@ onUnmounted(() => {
   margin: 0;
 }
 
-.card-header h4 {
-  font-size: 0.95rem;
-  color: #37474f;
-  font-weight: 600;
-  margin: 0;
-}
-
 .header-actions {
   display: flex;
   gap: 6px;
@@ -541,7 +731,7 @@ onUnmounted(() => {
 
 .filter-row {
   display: flex;
-  gap: 16px;
+  gap: 14px;
   flex-wrap: wrap;
   align-items: flex-end;
 }
@@ -550,11 +740,26 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
 .filter-item label {
   font-size: 0.78rem;
   color: #607d8b;
+  white-space: nowrap;
+}
+
+.filter-actions {
+  align-self: flex-end;
+}
+
+.filter-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-icon {
+  font-style: normal;
 }
 
 /* ========== 汇总标题 ========== */
@@ -589,7 +794,7 @@ onUnmounted(() => {
 
 .stat-card {
   flex: 1;
-  min-width: 200px;
+  min-width: 180px;
   background: #fff;
   border-radius: 10px;
   padding: 14px 16px;
@@ -606,7 +811,7 @@ onUnmounted(() => {
 
 .stat-values {
   display: flex;
-  gap: 16px;
+  gap: 14px;
   flex-wrap: wrap;
 }
 
@@ -623,14 +828,40 @@ onUnmounted(() => {
 .stat-item.min strong { color: #1565c0; }
 .stat-item.avg strong { color: #2e7d32; }
 
-/* ========== 图表 ========== */
-.chart-card {
-  min-height: 200px;
+/* ========== 视图卡片 ========== */
+.view-card {
+  margin-bottom: 0;
 }
 
+.tab-bar {
+  display: flex;
+  gap: 0;
+}
+
+.tab-item {
+  padding: 7px 20px;
+  font-size: 0.88rem;
+  color: #78909c;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.tab-item:hover {
+  color: #37474f;
+}
+
+.tab-item.active {
+  color: #2e7d32;
+  border-bottom-color: #2e7d32;
+  font-weight: 600;
+}
+
+/* ========== 图表 ========== */
 .chart-container {
   position: relative;
-  height: 380px;
+  height: 420px;
 }
 
 .chart-container canvas {
@@ -638,25 +869,21 @@ onUnmounted(() => {
   height: 100% !important;
 }
 
-.chart-placeholder {
+.view-placeholder {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 300px;
+  height: 340px;
   color: #90a4ae;
   font-size: 0.9rem;
 }
 
-.chart-placeholder.error {
+.view-placeholder.error {
   color: #c62828;
 }
 
 /* ========== 表格 ========== */
-.table-card {
-  margin-bottom: 0;
-}
-
 .table-wrapper {
   overflow-x: auto;
 }
@@ -692,6 +919,12 @@ td {
   font-family: 'Consolas', 'Courier New', monospace;
   font-weight: 500;
   color: #263238;
+}
+
+.missing-cell {
+  color: #bdbdbd;
+  cursor: help;
+  text-decoration: underline dotted;
 }
 
 .empty-cell {
@@ -730,7 +963,7 @@ td {
   font-size: 0.85rem;
   color: #37474f;
   font-weight: 500;
-  min-width: 80px;
+  min-width: 70px;
   text-align: center;
 }
 
@@ -750,13 +983,14 @@ td {
   to { transform: rotate(360deg); }
 }
 
+/* ========== 响应式 ========== */
 @media (max-width: 900px) {
   .filter-row {
-    flex-direction: column;
     gap: 10px;
   }
   .filter-item {
-    width: 100%;
+    flex: 1 1 100%;
+    min-width: 0;
   }
   .stats-row {
     flex-direction: column;
@@ -764,6 +998,9 @@ td {
   .pagination-bar {
     flex-direction: column;
     align-items: flex-start;
+  }
+  .chart-container {
+    height: 300px;
   }
 }
 </style>
