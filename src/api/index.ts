@@ -189,6 +189,107 @@ export async function fetchDecisionSummary(prompt: string): Promise<DecisionSumm
   return resp.json()
 }
 
+// ==================== 阈值管理 API ====================
+export interface ThresholdStage {
+  id: number
+  stageName: string
+  stageOrder: number
+  typicalStartMonth: number
+  typicalEndMonth: number
+  gddThresholdLow: number
+  gddThresholdHigh: number
+  description: string
+}
+
+export interface StageThresholdItem {
+  id: number
+  propertyIdentifier: string
+  propertyName: string
+  thresholdType: string
+  thresholdTypeName: string
+  thresholdValue: number
+  unit: string
+  isActive: boolean
+  soilConfigId: number | null
+}
+
+export interface ThresholdSnapshotItem {
+  id: number
+  oldValue: number
+  newValue: number
+  changeReason: string
+  changeSource: string
+  operator: string
+  changedAt: string
+}
+
+export interface CurrentThresholdItem {
+  propertyIdentifier: string
+  propertyName: string
+  thresholdType: string
+  thresholdTypeName: string
+  value: number
+}
+
+export interface CurrentThresholdsData {
+  stageName: string
+  stageOrder: number
+  soilType: string
+  description: string
+  thresholds: CurrentThresholdItem[]
+}
+
+export interface ApiResult<T> {
+  code: number
+  message?: string
+  data?: T
+}
+
+export async function fetchCurrentThresholds(soilType = 'LOAM'): Promise<ApiResult<CurrentThresholdsData>> {
+  const resp = await fetch(`${BASE}/thresholds/current?soilType=${soilType}`)
+  return resp.json()
+}
+
+export async function fetchThresholdStages(): Promise<ApiResult<ThresholdStage[]>> {
+  const resp = await fetch(`${BASE}/thresholds/stages`)
+  return resp.json()
+}
+
+export async function fetchStageThresholds(stageId: number): Promise<ApiResult<StageThresholdItem[]>> {
+  const resp = await fetch(`${BASE}/thresholds/stages/${stageId}`)
+  return resp.json()
+}
+
+export async function updateThresholdValue(id: number, value: number, reason = '人工调整', operator = 'admin'): Promise<ApiResult<Record<string, unknown>>> {
+  const resp = await fetch(`${BASE}/thresholds/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value, reason, operator }),
+  })
+  return resp.json()
+}
+
+export async function fetchThresholdHistory(id: number): Promise<ApiResult<ThresholdSnapshotItem[]>> {
+  const resp = await fetch(`${BASE}/thresholds/${id}/history`)
+  return resp.json()
+}
+
+export async function overridePhenologyStage(cropId: number, stageId: number): Promise<ApiResult<Record<string, unknown>>> {
+  const resp = await fetch(`${BASE}/thresholds/phenology/override`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cropId, stageId }),
+  })
+  return resp.json()
+}
+
+export async function clearPhenologyOverride(cropId: number): Promise<ApiResult<Record<string, unknown>>> {
+  const resp = await fetch(`${BASE}/thresholds/phenology/override?cropId=${cropId}`, {
+    method: 'DELETE',
+  })
+  return resp.json()
+}
+
 export function createSSEConnection(
   onMessage: (data: Record<string, Record<string, { value: unknown; time: number; name?: string; unit?: string; mode?: string }>>) => void,
   onStatusChange: (online: boolean) => void

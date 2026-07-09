@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
-import { chatStream, fetchASR, getTtsUrl, fetchDecisionSummary, type DecisionSummaryData } from '../api'
+import { chatStream, fetchASR, getTtsUrl, fetchDecisionSummary, fetchCurrentThresholds, type DecisionSummaryData, type CurrentThresholdsData, type CurrentThresholdItem } from '../api'
 import { useDeviceStore } from '../stores/devices'
 
 marked.setOptions({ breaks: true, gfm: true })
@@ -13,15 +13,58 @@ const wateringActive = ref(false)
 const waterVolume = ref(50)
 const waterDuration = ref(15)
 const waterInterval = ref(6)
-const moistureLow = ref(30)
-const moistureHigh = ref(70)
-const tempCompensation = ref(1.0)
 const allowedStart = ref('06:00')
 const allowedEnd = ref('20:00')
 
 function toggleWatering() {
   wateringActive.value = !wateringActive.value
 }
+
+// ==================== 当前生效阈值（从后端获取） ====================
+const currentStageName = ref('')
+const currentSoilType = ref('LOAM')
+const currentThresholds = ref<CurrentThresholdsData['thresholds']>([])
+const thresholdsLoading = ref(false)
+
+const soilTypeOptions = [
+  { label: '壤土 (LOAM)', value: 'LOAM' },
+  { label: '砂土 (SAND)', value: 'SAND' },
+  { label: '砂壤土 (SANDY_LOAM)', value: 'SANDY_LOAM' },
+  { label: '粘壤土 (CLAY_LOAM)', value: 'CLAY_LOAM' },
+  { label: '粘土 (CLAY)', value: 'CLAY' },
+]
+
+const propertyLabelMap: Record<string, string> = {
+  A: '土壤pH值',
+  B: '土壤湿度',
+  C: '环境温度',
+  D: '环境湿度',
+  E: '光照',
+}
+
+async function loadCurrentThresholds() {
+  thresholdsLoading.value = true
+  try {
+    const resp = await fetchCurrentThresholds(currentSoilType.value)
+    if (resp.code === 200 && resp.data) {
+      currentStageName.value = resp.data.stageName
+      currentThresholds.value = resp.data.thresholds
+    }
+  } catch {
+    // 后端不可用，保持空数据
+  } finally {
+    thresholdsLoading.value = false
+  }
+}
+
+const groupedCurrentThresholds = computed(() => {
+  const groups: Record<string, CurrentThresholdItem[]> = {}
+  for (const t of currentThresholds.value) {
+    if (!groups[t.propertyIdentifier]) groups[t.propertyIdentifier] = []
+    groups[t.propertyIdentifier].push(t)
+  }
+  return groups
+})
 
 // ==================== 智能决策数据（来自智能体） ====================
 const decisionLoading = ref(false)
@@ -80,6 +123,7 @@ const overallLevel = computed(() => {
 
 onMounted(() => {
   refreshDecision()
+  loadCurrentThresholds()
 })
 
 // ==================== 决策日志 ====================
@@ -336,29 +380,29 @@ onBeforeUnmount(() => {
 
       <div class="card">
         <div class="card-header">
-          <h3>📐 阈值设置</h3>
-          <span class="badge">可配置</span>
+          <h3>📐 当前生效阈值</h3>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span v-if="currentStageName" class="badge">{{ currentStageName }}</span>
+            <el-select v-model="currentSoilType" size="small" style="width:160px" @change="loadCurrentThresholds">
+              <el-option v-for="s in soilTypeOptions" :key="s.value" :label="s.label" :value="s.value" />
+            </el-select>
+          </div>
         </div>
-        <div class="control-body">
-          <div class="control-row">
-            <span class="label">湿度下限阈值</span>
-            <el-input-number v-model="moistureLow" :min="10" :max="90" size="small" /> %
-          </div>
-          <div class="control-row">
-            <span class="label">湿度上限阈值</span>
-            <el-input-number v-model="moistureHigh" :min="20" :max="100" size="small" /> %
-          </div>
-          <div class="control-row">
-            <span class="label">温度补偿系数</span>
-            <el-input-number v-model="tempCompensation" :min="0.5" :max="2.0" :step="0.1" :precision="1" size="small" />
-          </div>
-          <div class="control-row">
-            <span class="label">允许开始时段</span>
-            <el-time-picker v-model="allowedStart" format="HH:mm" size="small" style="width:120px" />
-          </div>
-          <div class="control-row">
-            <span class="label">允许结束时段</span>
-            <el-time-picker v-model="allowedEnd" format="HH:mm" size="small" style="width:120px" />
+        <div class="control-body" v-loading="thresholdsLoading">
+          <template v-if="currentThresholds.length > 0">
+            <div v-for="(group, propId) in groupedCurrentThresholds" :key="propId" class="threshold-prop-group">
+              <div class="threshold-prop-label">{{ propertyLabelMap[propId] || propId }}</div>
+              <div class="threshold-values">
+                <template v-for="t in (group as CurrentThresholdItem[])" :key="t.thresholdType">
+                  <span v-if="t.thresholdType === 'LOWER'" class="threshold-tag lower">下限 {{ t.value }}</span>
+                  <span v-else-if="t.thresholdType === 'UPPER'" class="threshold-tag upper">上限 {{ t.value }}</span>
+                  <span v-else class="threshold-tag target">{{ t.thresholdTypeName }} {{ t.value }}</span>
+                </template>
+              </div>
+            </div>
+          </template>
+          <div v-else-if="!thresholdsLoading" class="empty-hint">
+            暂无阈值数据，请确认后端阈值服务已启动
           </div>
         </div>
       </div>
@@ -647,6 +691,51 @@ onBeforeUnmount(() => {
 .metric-label { color: #607d8b; }
 .metric-value { font-weight: 600; color: #263238; }
 .metric-value.low { color: #e65100; }
+
+/* 当前生效阈值显示 */
+.threshold-prop-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px dashed #e0e0e0;
+}
+.threshold-prop-group:last-child { border-bottom: none; }
+.threshold-prop-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #37474f;
+  min-width: 80px;
+}
+.threshold-values {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.threshold-tag {
+  font-size: 0.78rem;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+.threshold-tag.lower {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+.threshold-tag.upper {
+  background: #fce4ec;
+  color: #c62828;
+}
+.threshold-tag.target {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+.empty-hint {
+  text-align: center;
+  color: #90a4ae;
+  font-size: 0.85rem;
+  padding: 20px 0;
+}
 
 /* ========== 智能决策建议卡片 ========== */
 .decision-card {

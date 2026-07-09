@@ -26,6 +26,12 @@ const router = createRouter({
           component: () => import('../views/DecisionView.vue'),
           meta: { title: '智能决策管理' },
         },
+        {
+          path: 'thresholds',
+          name: 'Thresholds',
+          component: () => import('../views/ThresholdConfigView.vue'),
+          meta: { title: '阈值配置管理' },
+        },
       ],
     },
   ],

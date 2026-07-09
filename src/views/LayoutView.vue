@@ -11,6 +11,7 @@ const tabs = [
   { key: 'realtime', label: '实时数据监测', icon: '📡' },
   { key: 'history', label: '历史数据分析', icon: '📊' },
   { key: 'decision', label: '智能决策管理', icon: '🧠' },
+  { key: 'thresholds', label: '阈值配置管理', icon: '🌱' },
 ]
 
 function activeTab(): string {
