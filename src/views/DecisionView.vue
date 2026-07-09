@@ -122,7 +122,6 @@ const overallLevel = computed(() => {
 })
 
 onMounted(() => {
-  refreshDecision()
   loadCurrentThresholds()
 })
 
@@ -410,9 +409,14 @@ onBeforeUnmount(() => {
       <div class="card decision-card">
         <div class="card-header">
           <h3>🧠 小沂智能决策建议</h3>
-          <span :class="['badge', `badge-${overallLevel}`]">
-            {{ decisionLoading ? '分析中...' : overallLevel === 'danger' ? '需处理' : overallLevel === 'warning' ? '需关注' : overallLevel === 'safe' ? '正常' : '等待数据' }}
-          </span>
+          <div class="header-right">
+            <span :class="['badge', `badge-${overallLevel}`]">
+              {{ decisionLoading ? '分析中...' : overallLevel === 'danger' ? '需处理' : overallLevel === 'warning' ? '需关注' : overallLevel === 'safe' ? '正常' : '等待数据' }}
+            </span>
+            <el-button size="small" type="primary" :loading="decisionLoading" @click="refreshDecision">
+              获取决策建议
+            </el-button>
+          </div>
         </div>
 
         <!-- 加载状态 -->
@@ -629,6 +633,12 @@ onBeforeUnmount(() => {
   font-size: 1.05rem;
   color: #2e7d32;
   font-weight: 600;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .badge {
