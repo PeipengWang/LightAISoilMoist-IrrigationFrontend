@@ -27,6 +27,8 @@ const records = ref<HistoryRecord[]>([])
 const totalCount = ref(0)
 const queryDone = ref(false)
 const queryError = ref('')
+const showChart = ref(true)
+const showTable = ref(true)
 
 // ==================== 分页 ====================
 const currentPage = ref(1)
@@ -217,12 +219,12 @@ async function queryHistory() {
   const propNames = histProperties.value.map(p => propertyNameMap.value[p] || p).join('+')
   summaryTitle.value = `【${deviceOptions.value.find(d => d.value === histDevice.value)?.label || histDevice.value}】${propNames} - ${rangeLabel}`
 
-  // 渲染图表
-  await nextTick()
-  renderChart()
-
   loading.value = false
   queryDone.value = true
+
+  // 渲染图表（先 loading=false 让 canvas 出现在 DOM 中）
+  await nextTick()
+  renderChart()
 }
 
 function formatTime(ts: number): string {
@@ -409,7 +411,12 @@ onUnmounted(() => {
     </div>
 
     <!-- 图表区域 -->
-    <div class="card chart-card">
+    <div class="card chart-card" v-if="queryDone || loading">
+      <div class="card-header">
+        <h4>📈 趋势折线图</h4>
+        <el-switch v-if="records.length > 0" v-model="showChart" size="small" active-text="显示" inactive-text="隐藏" />
+      </div>
+
       <div v-if="loading" class="chart-placeholder">
         <div class="spinner"></div>
         <p>数据加载中...</p>
@@ -417,13 +424,10 @@ onUnmounted(() => {
       <div v-else-if="queryError" class="chart-placeholder error">
         <p>⚠️ {{ queryError }}</p>
       </div>
-      <div v-else-if="!queryDone" class="chart-placeholder">
-        <p>📈 选择设备和属性后点击查询</p>
-      </div>
       <div v-else-if="records.length === 0" class="chart-placeholder">
         <p>📭 当前设备该时间段无采集数据，请更换筛选条件</p>
       </div>
-      <div v-else class="chart-container">
+      <div v-show="showChart && records.length > 0" class="chart-container">
         <canvas ref="chartCanvas"></canvas>
       </div>
     </div>
@@ -431,49 +435,54 @@ onUnmounted(() => {
     <!-- 明细表格 -->
     <div class="card table-card" v-if="records.length > 0">
       <div class="card-header">
-        <h4>数据明细</h4>
-        <el-button size="small" plain @click="exportCSV">导出 CSV</el-button>
-      </div>
-
-      <div class="table-wrapper">
-        <table>
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th v-for="prop in histProperties" :key="prop">
-                {{ propertyNameMap[prop] || prop }} ({{ propertyUnitMap[prop] || '' }})
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-if="paginatedRecords.length === 0">
-              <td :colspan="histProperties.length + 1" class="empty-cell">暂无数据</td>
-            </tr>
-            <tr v-for="(r, i) in paginatedRecords" :key="i">
-              <td class="time-cell">{{ r.timeStr }}</td>
-              <td v-for="prop in histProperties" :key="prop" class="value-cell">
-                {{ r.values[prop] !== undefined ? r.values[prop].toFixed(1) : '--' }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- 分页 -->
-      <div class="pagination-bar">
-        <div class="page-info">
-          共 {{ totalCount }} 条，每页
-          <el-select v-model="pageSize" size="small" style="width:80px">
-            <el-option v-for="s in pageSizeOptions" :key="s" :label="String(s)" :value="s" />
-          </el-select>
-          条
+        <h4>📋 数据明细</h4>
+        <div class="header-actions">
+          <el-switch v-model="showTable" size="small" active-text="显示" inactive-text="隐藏" />
+          <el-button size="small" plain @click="exportCSV">导出 CSV</el-button>
         </div>
-        <div class="page-controls">
-          <el-button size="small" :disabled="currentPage <= 1" @click="goPage(1)">首页</el-button>
-          <el-button size="small" :disabled="currentPage <= 1" @click="goPage(currentPage - 1)">上一页</el-button>
-          <span class="page-num">{{ currentPage }} / {{ totalPages }}</span>
-          <el-button size="small" :disabled="currentPage >= totalPages" @click="goPage(currentPage + 1)">下一页</el-button>
-          <el-button size="small" :disabled="currentPage >= totalPages" @click="goPage(totalPages)">末页</el-button>
+      </div>
+
+      <div v-show="showTable">
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th v-for="prop in histProperties" :key="prop">
+                  {{ propertyNameMap[prop] || prop }} ({{ propertyUnitMap[prop] || '' }})
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="paginatedRecords.length === 0">
+                <td :colspan="histProperties.length + 1" class="empty-cell">暂无数据</td>
+              </tr>
+              <tr v-for="(r, i) in paginatedRecords" :key="i">
+                <td class="time-cell">{{ r.timeStr }}</td>
+                <td v-for="prop in histProperties" :key="prop" class="value-cell">
+                  {{ r.values[prop] !== undefined ? r.values[prop].toFixed(1) : '--' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 分页 -->
+        <div class="pagination-bar">
+          <div class="page-info">
+            共 {{ totalCount }} 条，每页
+            <el-select v-model="pageSize" size="small" style="width:80px">
+              <el-option v-for="s in pageSizeOptions" :key="s" :label="String(s)" :value="s" />
+            </el-select>
+            条
+          </div>
+          <div class="page-controls">
+            <el-button size="small" :disabled="currentPage <= 1" @click="goPage(1)">首页</el-button>
+            <el-button size="small" :disabled="currentPage <= 1" @click="goPage(currentPage - 1)">上一页</el-button>
+            <span class="page-num">{{ currentPage }} / {{ totalPages }}</span>
+            <el-button size="small" :disabled="currentPage >= totalPages" @click="goPage(currentPage + 1)">下一页</el-button>
+            <el-button size="small" :disabled="currentPage >= totalPages" @click="goPage(totalPages)">末页</el-button>
+          </div>
         </div>
       </div>
     </div>
