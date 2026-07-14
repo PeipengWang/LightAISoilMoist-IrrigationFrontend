@@ -189,6 +189,49 @@ export async function fetchDecisionSummary(prompt: string): Promise<DecisionSumm
   return resp.json()
 }
 
+// ==================== 决策日志 API ====================
+export interface DecisionLogItem {
+  id: number
+  deviceName: string
+  identifier: string
+  propertyName: string
+  value: string
+  valueDesc: string | null
+  decisionType: string
+  success: boolean
+  resultMsg: string
+  operator: string
+  createdAt: string
+}
+
+export interface DecisionLogPageResponse {
+  content: DecisionLogItem[]
+  page: number
+  size: number
+  totalElements: number
+  totalPages: number
+}
+
+export async function fetchDecisionLogs(params: {
+  device_name?: string
+  decision_type?: string
+  start?: number
+  end?: number
+  page?: number
+  size?: number
+} = {}): Promise<DecisionLogPageResponse> {
+  const sp = new URLSearchParams()
+  if (params.device_name) sp.set('device_name', params.device_name)
+  if (params.decision_type) sp.set('decision_type', params.decision_type)
+  if (params.start) sp.set('start', String(params.start))
+  if (params.end) sp.set('end', String(params.end))
+  if (params.page !== undefined) sp.set('page', String(params.page))
+  if (params.size) sp.set('size', String(params.size))
+  const qs = sp.toString()
+  const resp = await fetch(`${BASE}/decision-logs${qs ? '?' + qs : ''}`)
+  return resp.json()
+}
+
 // ==================== 阈值管理 API ====================
 export interface ThresholdStage {
   id: number
@@ -286,6 +329,29 @@ export async function overridePhenologyStage(cropId: number, stageId: number): P
 export async function clearPhenologyOverride(cropId: number): Promise<ApiResult<Record<string, unknown>>> {
   const resp = await fetch(`${BASE}/thresholds/phenology/override?cropId=${cropId}`, {
     method: 'DELETE',
+  })
+  return resp.json()
+}
+
+// ==================== 指令下发 API ====================
+export interface CommandResponse {
+  device_name?: string
+  identifier?: string
+  property_name?: string
+  value?: number | string
+  value_desc?: string
+  result?: { code: number; msg: string }
+  error?: string
+  available_devices?: string[]
+  available_identifiers?: string[]
+  writable_identifiers?: string[]
+}
+
+export async function sendCommand(deviceName: string, identifier: string, value: number | string): Promise<CommandResponse> {
+  const resp = await fetch(`${BASE}/command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_name: deviceName, identifier, value }),
   })
   return resp.json()
 }

@@ -1,23 +1,85 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
-import { chatStream, fetchASR, getTtsUrl, fetchDecisionSummary, fetchCurrentThresholds, type DecisionSummaryData, type CurrentThresholdsData, type CurrentThresholdItem } from '../api'
+import { chatStream, fetchASR, getTtsUrl, fetchDecisionSummary, fetchCurrentThresholds, sendCommand, fetchDecisionLogs, type DecisionSummaryData, type CurrentThresholdsData, type CurrentThresholdItem, type DecisionLogItem } from '../api'
 import { useDeviceStore } from '../stores/devices'
 
 marked.setOptions({ breaks: true, gfm: true })
 
 const store = useDeviceStore()
 
-// ==================== 设备控制参数 ====================
-const wateringActive = ref(false)
-const waterVolume = ref(50)
-const waterDuration = ref(15)
-const waterInterval = ref(6)
-const allowedStart = ref('06:00')
-const allowedEnd = ref('20:00')
+// ==================== 设备控制 — 指令下发 ====================
+const pumpSending = ref(false)
+const thresholdSending = ref<Record<string, boolean>>({})
 
-function toggleWatering() {
-  wateringActive.value = !wateringActive.value
+// 设备端阈值输入（从实时数据读取当前值）
+const devicePhLow = ref('')
+const devicePhHigh = ref('')
+const deviceHumidityLow = ref('')
+const deviceHumidityHigh = ref('')
+const editedFields = ref<Set<string>>(new Set())
+
+function markEdited(field: string) {
+  editedFields.value = new Set([...editedFields.value, field])
+}
+
+// 监听实时数据，自动回填设备端阈值（仅填充未被用户编辑过的字段）
+watch(() => store.latestData['device'], (data) => {
+  if (!data) return
+  const shouldUpdate = (ident: string) => !editedFields.value.has(ident) && data[ident]?.value != null && data[ident]?.value !== ''
+  if (shouldUpdate('I')) devicePhLow.value = String(data['I'].value)
+  if (shouldUpdate('J')) devicePhHigh.value = String(data['J'].value)
+  if (shouldUpdate('K')) deviceHumidityLow.value = String(data['K'].value)
+  if (shouldUpdate('L')) deviceHumidityHigh.value = String(data['L'].value)
+}, { immediate: true, deep: true })
+
+// 水泵实际状态（从实时数据读取）
+const pumpOn = computed(() => {
+  const val = store.latestData['device']?.['F']?.value
+  return val === 1 || val === '1'
+})
+
+const pumpStatusText = computed(() => pumpOn.value ? '设备运行中' : '设备已停止')
+
+async function togglePump() {
+  pumpSending.value = true
+  try {
+    const newVal = pumpOn.value ? 0 : 1
+    const resp = await sendCommand('device', 'F', newVal)
+    if (resp.result?.code === 0) {
+      showToast(`水泵已${newVal === 1 ? '开启' : '关闭'}`)
+    } else if (resp.error) {
+      showToast(`指令下发失败: ${resp.error}`)
+    } else {
+      showToast(`指令已下发`)
+    }
+  } catch {
+    showToast('指令下发失败，请确认后端已启动')
+  } finally {
+    pumpSending.value = false
+  }
+}
+
+async function sendThresholdCmd(identifier: string, value: string) {
+  if (!value.trim()) {
+    showToast('请输入有效的阈值')
+    return
+  }
+  thresholdSending.value = { ...thresholdSending.value, [identifier]: true }
+  try {
+    const resp = await sendCommand('device', identifier, value)
+    if (resp.result?.code === 0) {
+      showToast(`${resp.property_name || identifier} 已设为 ${value}`)
+    } else if (resp.error) {
+      showToast(`指令下发失败: ${resp.error}`)
+    } else {
+      showToast(`指令已下发`)
+    }
+  } catch {
+    showToast('指令下发失败，请确认后端已启动')
+  } finally {
+    thresholdSending.value = { ...thresholdSending.value, [identifier]: false }
+  }
 }
 
 // ==================== 当前生效阈值（从后端获取） ====================
@@ -40,6 +102,9 @@ const propertyLabelMap: Record<string, string> = {
   C: '环境温度',
   D: '环境湿度',
   E: '光照',
+  M: '氮含量',
+  N: '磷含量',
+  O: '钾含量',
 }
 
 async function loadCurrentThresholds() {
@@ -123,22 +188,54 @@ const overallLevel = computed(() => {
 
 onMounted(() => {
   loadCurrentThresholds()
+  loadDecisionLogs()
 })
 
 // ==================== 决策日志 ====================
-interface DecisionLog {
-  time: string
-  trigger: string
-  result: string
-  status: string
+const logLoading = ref(false)
+const decisionLogs = ref<DecisionLogItem[]>([])
+const logTotal = ref(0)
+const logPage = ref(0)
+const logPageSize = ref(10)
+
+const decisionTypeLabel: Record<string, string> = {
+  PUMP_CONTROL: '水泵控制',
+  THRESHOLD_SET: '阈值设置',
 }
-const decisionLogs = ref<DecisionLog[]>([
-  { time: '2026-07-08 06:15', trigger: '土壤湿度低于30%', result: '自动开启灌溉', status: '已执行' },
-  { time: '2026-07-07 18:30', trigger: '土壤湿度低于30%', result: '自动开启灌溉', status: '已执行' },
-  { time: '2026-07-07 06:10', trigger: '定时灌溉', result: '自动开启灌溉', status: '已执行' },
-  { time: '2026-07-06 18:22', trigger: '土壤湿度低于30%', result: '自动开启灌溉', status: '已执行' },
-  { time: '2026-07-06 06:05', trigger: '定时灌溉', result: '自动开启灌溉', status: '已执行' },
-])
+
+async function loadDecisionLogs() {
+  logLoading.value = true
+  try {
+    const resp = await fetchDecisionLogs({
+      page: logPage.value,
+      size: logPageSize.value,
+    })
+    decisionLogs.value = resp.content || []
+    logTotal.value = resp.totalElements || 0
+  } catch {
+    decisionLogs.value = []
+  } finally {
+    logLoading.value = false
+  }
+}
+
+function logPageChange(page: number) {
+  logPage.value = page
+  loadDecisionLogs()
+}
+
+function logSizeChange(size: number) {
+  logPageSize.value = size
+  logPage.value = 0
+  loadDecisionLogs()
+}
+
+const logTotalPages = computed(() => Math.ceil(logTotal.value / logPageSize.value) || 1)
+
+function formatLogTime(createdAt: string): string {
+  if (!createdAt) return '--'
+  return createdAt.replace('T', ' ').substring(0, 19)
+}
 
 // ==================== 聊天弹窗 ====================
 const chatVisible = ref(false)
@@ -348,31 +445,53 @@ onBeforeUnmount(() => {
         <div class="card-header">
           <h3>🔧 设备控制</h3>
           <el-switch
-            v-model="wateringActive"
+            :model-value="pumpOn"
             active-text="开启"
             inactive-text="关闭"
             size="large"
-            @change="toggleWatering"
+            :loading="pumpSending"
+            @change="togglePump"
           />
         </div>
         <div class="control-body">
           <div class="control-row">
-            <span class="label">当前状态</span>
-            <span :class="['status-tag', wateringActive ? 'on' : 'off']">
-              {{ wateringActive ? '设备运行中' : '设备已停止' }}
+            <span class="label">水泵状态</span>
+            <span :class="['status-tag', pumpOn ? 'on' : 'off']">
+              {{ pumpStatusText }}
             </span>
           </div>
+
+          <div class="section-divider">
+            <span class="section-label">📡 设备阈值下发</span>
+          </div>
+
           <div class="control-row">
-            <span class="label">出水量</span>
-            <el-slider v-model="waterVolume" :min="10" :max="100" :step="5" show-input />
+            <span class="label">PH阈值低 (I)</span>
+            <div class="threshold-input-group">
+              <el-input v-model="devicePhLow" size="small" style="width:100px" placeholder="如 5.5" @input="markEdited('I')" />
+              <el-button size="small" type="primary" :loading="thresholdSending['I']" @click="sendThresholdCmd('I', devicePhLow)">下发</el-button>
+            </div>
           </div>
           <div class="control-row">
-            <span class="label">工作时长 (分钟)</span>
-            <el-input-number v-model="waterDuration" :min="1" :max="120" size="small" />
+            <span class="label">PH阈值高 (J)</span>
+            <div class="threshold-input-group">
+              <el-input v-model="devicePhHigh" size="small" style="width:100px" placeholder="如 8.5" @input="markEdited('J')" />
+              <el-button size="small" type="primary" :loading="thresholdSending['J']" @click="sendThresholdCmd('J', devicePhHigh)">下发</el-button>
+            </div>
           </div>
           <div class="control-row">
-            <span class="label">工作间隔 (小时)</span>
-            <el-input-number v-model="waterInterval" :min="1" :max="24" size="small" />
+            <span class="label">湿度阈值低 (K)</span>
+            <div class="threshold-input-group">
+              <el-input v-model="deviceHumidityLow" size="small" style="width:100px" placeholder="如 30" @input="markEdited('K')" />
+              <el-button size="small" type="primary" :loading="thresholdSending['K']" @click="sendThresholdCmd('K', deviceHumidityLow)">下发</el-button>
+            </div>
+          </div>
+          <div class="control-row">
+            <span class="label">湿度阈值高 (L)</span>
+            <div class="threshold-input-group">
+              <el-input v-model="deviceHumidityHigh" size="small" style="width:100px" placeholder="如 70" @input="markEdited('L')" />
+              <el-button size="small" type="primary" :loading="thresholdSending['L']" @click="sendThresholdCmd('L', deviceHumidityHigh)">下发</el-button>
+            </div>
           </div>
         </div>
       </div>
@@ -515,20 +634,58 @@ onBeforeUnmount(() => {
     <div class="card" style="margin-top:16px">
       <div class="card-header">
         <h3>📝 决策日志</h3>
-        <el-button size="small" type="primary" plain>导出日志</el-button>
+        <el-button size="small" @click="loadDecisionLogs" :loading="logLoading">刷新</el-button>
       </div>
-      <el-table :data="decisionLogs" stripe size="small" style="width:100%">
-        <el-table-column prop="time" label="时间" width="180" />
-        <el-table-column prop="trigger" label="触发条件" />
-        <el-table-column prop="result" label="决策结果" />
-        <el-table-column prop="status" label="状态" width="100">
+      <el-table :data="decisionLogs" stripe size="small" style="width:100%" v-loading="logLoading">
+        <el-table-column label="时间" width="170">
+          <template #default="{ row }">{{ formatLogTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column prop="deviceName" label="设备" width="90" />
+        <el-table-column prop="propertyName" label="属性" width="110" />
+        <el-table-column label="下发值" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.status === '已执行' ? 'success' : 'info'" size="small">
-              {{ row.status }}
+            {{ row.valueDesc || row.value }}
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.decisionType === 'PUMP_CONTROL' ? 'primary' : 'warning'" size="small">
+              {{ decisionTypeLabel[row.decisionType] || row.decisionType }}
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="结果" width="80">
+          <template #default="{ row }">
+            <el-tag :type="row.success ? 'success' : 'danger'" size="small">
+              {{ row.success ? '成功' : '失败' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="resultMsg" label="返回信息" min-width="140">
+          <template #default="{ row }">
+            <span :style="{ color: row.success ? '#2e7d32' : '#c62828' }">{{ row.resultMsg }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="operator" label="操作来源" width="90" />
       </el-table>
+
+      <div class="pagination-bar" v-if="logTotal > 0">
+        <div class="page-info">
+          共 {{ logTotal }} 条，每页
+          <el-select :model-value="logPageSize" size="small" style="width:80px" @change="logSizeChange">
+            <el-option v-for="s in [10, 20, 50]" :key="s" :label="String(s)" :value="s" />
+          </el-select>
+          条
+        </div>
+        <div class="page-controls">
+          <el-button size="small" :disabled="logPage <= 0" @click="logPageChange(0)">首页</el-button>
+          <el-button size="small" :disabled="logPage <= 0" @click="logPageChange(logPage - 1)">上一页</el-button>
+          <span class="page-num">{{ logPage + 1 }} / {{ logTotalPages }}</span>
+          <el-button size="small" :disabled="logPage >= logTotalPages - 1" @click="logPageChange(logPage + 1)">下一页</el-button>
+          <el-button size="small" :disabled="logPage >= logTotalPages - 1" @click="logPageChange(logTotalPages - 1)">末页</el-button>
+        </div>
+      </div>
+      <div v-if="decisionLogs.length === 0 && !logLoading" class="empty-small">暂无决策日志记录</div>
     </div>
 
     <!-- ==================== 浮动AI助手按钮 ==================== -->
@@ -682,6 +839,26 @@ onBeforeUnmount(() => {
 .status-tag.off {
   background: #fbe9e7;
   color: #bf360c;
+}
+
+.section-divider {
+  display: flex;
+  align-items: center;
+  padding: 8px 0 4px;
+  margin-top: 4px;
+  border-top: 1px dashed #e0e0e0;
+}
+
+.section-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #546e7a;
+}
+
+.threshold-input-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* 指标列表 */
@@ -1185,6 +1362,40 @@ onBeforeUnmount(() => {
 .toast-fade-leave-active { transition: opacity 0.3s ease; }
 .toast-fade-enter-from,
 .toast-fade-leave-to { opacity: 0; }
+
+/* ========== 决策日志分页 ========== */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.page-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: #607d8b;
+}
+
+.page-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.page-num {
+  font-size: 0.85rem;
+  color: #37474f;
+  font-weight: 500;
+  min-width: 70px;
+  text-align: center;
+}
 
 @media (max-width: 900px) {
   .grid-3 { grid-template-columns: 1fr; }

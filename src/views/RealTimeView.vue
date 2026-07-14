@@ -132,6 +132,7 @@ const quickTemplates: QuickTemplate[] = [
   { name: '土壤监测', properties: ['temperature', 'humidity', 'PH'] },
   { name: '完整环境', properties: ['temperature', 'humidity', 'PH', 'light'] },
   { name: '灌溉相关', properties: ['humidity', 'temperature', 'pump'] },
+  { name: '土壤养分', properties: ['M', 'N', 'O'] },
 ]
 
 function applyTemplate(tpl: QuickTemplate) {

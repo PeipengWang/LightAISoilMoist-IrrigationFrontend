@@ -45,6 +45,9 @@ const propertyLabelMap: Record<string, string> = {
   C: '环境温度',
   D: '环境湿度',
   E: '光照',
+  M: '氮含量',
+  N: '磷含量',
+  O: '钾含量',
 }
 
 const propertyColorMap: Record<string, string> = {
@@ -53,6 +56,9 @@ const propertyColorMap: Record<string, string> = {
   C: '#e65100',
   D: '#00838f',
   E: '#f9a825',
+  M: '#2e7d32',
+  N: '#c62828',
+  O: '#6a1b9a',
 }
 
 async function loadStages() {
@@ -166,7 +172,7 @@ const groupedThresholds = computed(() => {
     groups[key].push(t)
   }
   // 按 B, A, C, D, E 排序
-  const order = ['B', 'A', 'C', 'D', 'E']
+  const order = ['B', 'A', 'C', 'D', 'E', 'M', 'N', 'O']
   return order.filter(k => groups[k]).map(k => ({ propertyId: k, items: groups[k] }))
 })
 

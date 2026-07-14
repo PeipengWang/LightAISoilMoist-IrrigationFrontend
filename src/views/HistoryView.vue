@@ -41,7 +41,7 @@ interface GapSegment {
 
 // ==================== 分页 ====================
 const currentPage = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(10)
 const pageSizeOptions = [10, 20, 50]
 
 const paginatedRecords = computed(() => {
