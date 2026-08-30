@@ -16,7 +16,6 @@ export const useDeviceStore = defineStore('devices', () => {
   const statusText = ref('在线')
   const lastSseTime = ref(0)
   const sseCount = ref(0)
-  const pushLatency = ref(0)
 
   let sseConnection: SSEConnection | null = null
   let pollTimer: ReturnType<typeof setInterval> | null = null
