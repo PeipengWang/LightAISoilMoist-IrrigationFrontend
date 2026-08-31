@@ -249,6 +249,8 @@ const messages = ref<ChatMessage[]>([])
 const inputText = ref('')
 const isStreaming = ref(false)
 const isRecording = ref(false)
+const isTranscribing = ref(false)
+const recordSeconds = ref(0)
 const showEmpty = ref(true)
 
 const messagesContainer = ref<HTMLDivElement>()
@@ -256,6 +258,8 @@ const textareaRef = ref<HTMLTextAreaElement>()
 
 let mediaRecorder: MediaRecorder | null = null
 let audioChunks: Blob[] = []
+let micStream: MediaStream | null = null
+let recordTimer: ReturnType<typeof setInterval> | null = null
 let currentAudio: HTMLAudioElement | null = null
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 const toastMsg = ref('')
@@ -372,6 +376,29 @@ function autoResize() {
   }
 }
 
+// ==================== 语音输入（麦克风 → ASR → 自动发送） ====================
+const MAX_RECORD_SECONDS = 60
+
+function formatDuration(sec: number): string {
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function clearRecordTimer() {
+  if (recordTimer) {
+    clearInterval(recordTimer)
+    recordTimer = null
+  }
+}
+
+function releaseMicStream() {
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop())
+    micStream = null
+  }
+}
+
 async function toggleRecording() {
   if (isRecording.value) {
     stopRecording()
@@ -381,54 +408,92 @@ async function toggleRecording() {
 }
 
 async function startRecording() {
+  if (isStreaming.value || isTranscribing.value) return
+
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    showToast('当前环境不支持录音，请通过 localhost 或 HTTPS 访问')
+    return
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    micStream = stream
+
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus'
       : 'audio/webm'
-    mediaRecorder = new MediaRecorder(stream)
+    mediaRecorder = new MediaRecorder(stream, { mimeType })
     audioChunks = []
 
     mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) audioChunks.push(e.data)
     }
     mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop())
+      clearRecordTimer()
+      releaseMicStream()
       const blob = new Blob(audioChunks, { type: mimeType })
+      audioChunks = []
       await transcribeAudio(blob)
     }
+
     mediaRecorder.start()
     isRecording.value = true
-    showToast('正在录音...')
+    recordSeconds.value = 0
+    clearRecordTimer()
+    recordTimer = setInterval(() => {
+      recordSeconds.value += 1
+      if (recordSeconds.value >= MAX_RECORD_SECONDS) {
+        showToast(`已达最长 ${MAX_RECORD_SECONDS} 秒，自动结束`)
+        stopRecording()
+      }
+    }, 1000)
+    showToast('正在录音，点击 ⏹ 结束并发送')
   } catch {
-    showToast('无法访问麦克风')
+    releaseMicStream()
+    showToast('无法访问麦克风，请检查浏览器麦克风权限')
   }
 }
 
 function stopRecording() {
   if (mediaRecorder && isRecording.value) {
-    mediaRecorder.stop()
     isRecording.value = false
+    mediaRecorder.stop()
+    mediaRecorder = null
   }
 }
 
 async function transcribeAudio(blob: Blob) {
-  showToast('语音识别中...')
+  if (blob.size < 1024) {
+    showToast('录音太短，请再说一遍')
+    return
+  }
+
+  isTranscribing.value = true
+  showToast('语音识别中...', 30000)
   try {
     const text = await fetchASR(blob)
-    if (text) {
-      showToast('识别成功，自动发送')
-      inputText.value = text
-      await sendMessage()
-    } else {
+    if (!text) {
       showToast('未识别到语音内容')
+      return
     }
-  } catch {
-    showToast('语音识别失败')
+    showToast(`已识别：${text}`, 2600)
+    inputText.value = text
+    await sendMessage()
+  } catch (e) {
+    console.error('[ASR] 语音识别失败：', e)
+    showToast('语音识别失败，请确认 ASR 服务(127.0.0.1:9001)已启动', 3200)
+  } finally {
+    isTranscribing.value = false
   }
 }
 
 onBeforeUnmount(() => {
+  clearRecordTimer()
+  if (mediaRecorder && isRecording.value) {
+    mediaRecorder.onstop = null
+    mediaRecorder.stop()
+  }
+  releaseMicStream()
   if (toastTimer) clearTimeout(toastTimer)
   if (currentAudio) {
     currentAudio.pause()
@@ -719,6 +784,15 @@ onBeforeUnmount(() => {
           ></div>
         </div>
 
+        <!-- Recording Bar -->
+        <Transition name="toast-fade">
+          <div v-if="isRecording" class="recording-bar">
+            <span class="rec-dot"></span>
+            <span class="rec-time">正在录音 {{ formatDuration(recordSeconds) }}</span>
+            <span class="rec-hint">最长 {{ MAX_RECORD_SECONDS }}s，点击 ⏹ 结束并发送</span>
+          </div>
+        </Transition>
+
         <!-- Input Area -->
         <div class="input-area">
           <div class="input-wrapper">
@@ -740,10 +814,13 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <button
-            :class="['mic-btn', { recording: isRecording }]"
+            :class="['mic-btn', { recording: isRecording, processing: isTranscribing }]"
+            :disabled="isStreaming || isTranscribing"
+            :title="isRecording ? '结束录音并发送' : '语音输入，说完后自动发送'"
             @click="toggleRecording"
           >
-            {{ isRecording ? '⏹' : '🎤' }}
+            <span v-if="isTranscribing" class="mini-spinner"></span>
+            <span v-else>{{ isRecording ? '⏹' : '🎤' }}</span>
           </button>
         </div>
 
@@ -1336,6 +1413,7 @@ onBeforeUnmount(() => {
   transition: all 0.2s ease;
 }
 .mic-btn:hover { background: #c8e6c9; }
+.mic-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .mic-btn.recording {
   background: #ff4757; color: white;
   animation: pulse 1.5s infinite;
@@ -1344,6 +1422,45 @@ onBeforeUnmount(() => {
   0%, 100% { box-shadow: 0 0 0 0 rgba(255,71,87,0.4); }
   50% { box-shadow: 0 0 0 10px rgba(255,71,87,0); }
 }
+.mic-btn.processing {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+.mini-spinner {
+  width: 16px; height: 16px;
+  border: 2px solid rgba(21,101,192,0.25);
+  border-top-color: #1565c0;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 录音状态条 */
+.recording-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: #fff5f5;
+  border: 1px solid #ffcdd2;
+  font-size: 12px;
+  color: #c62828;
+}
+.rec-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #ff4757;
+  flex-shrink: 0;
+  animation: blink 1s infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+.rec-time { font-weight: 600; font-variant-numeric: tabular-nums; }
+.rec-hint { margin-left: auto; color: #90a4ae; font-size: 11px; }
 
 .toast {
   position: absolute;

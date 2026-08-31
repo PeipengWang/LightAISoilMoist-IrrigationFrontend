@@ -129,12 +129,53 @@ export async function chatStream(
   }
 }
 
-export async function fetchASR(audioBlob: Blob): Promise<string> {
+// ==================== 语音识别（ASR） ====================
+// 本地 faster-whisper 服务，默认端口 9001
+// （脚本位置：E:\AIXiaoNuan\tools_other\asr_server.py，启动后监听 9001）
+export const ASR_URL = 'http://127.0.0.1:9001/asr'
+// 备用通道：同源 /api/asr 经 Vite 代理到智能体网关(8001)，再由网关转发到 ASR 服务
+const ASR_GATEWAY_URL = '/api/asr'
+
+function guessAudioExt(blob: Blob): string {
+  const type = blob.type || ''
+  if (type.includes('ogg')) return 'ogg'
+  if (type.includes('mp4')) return 'm4a'
+  if (type.includes('wav')) return 'wav'
+  if (type.includes('mpeg')) return 'mp3'
+  return 'webm'
+}
+
+async function postASR(url: string, audioBlob: Blob): Promise<string> {
   const formData = new FormData()
-  formData.append('file', audioBlob, 'voice.webm')
-  const resp = await fetch(`${YYA_BASE}/asr`, { method: 'POST', body: formData })
+  formData.append('file', audioBlob, `voice.${guessAudioExt(audioBlob)}`)
+  const resp = await fetch(url, { method: 'POST', body: formData })
+  if (!resp.ok) {
+    throw new Error(`ASR 服务返回 ${resp.status}`)
+  }
   const data = await resp.json()
-  return data.text || ''
+  if (data?.error) throw new Error(String(data.error))
+  if (typeof data?.text !== 'string') throw new Error('ASR 返回格式异常')
+  return data.text.trim()
+}
+
+/**
+ * 语音转文字。
+ * 优先直连本地 ASR 服务（与 TTS 一样走 127.0.0.1，服务已允许跨域）；
+ * 直连不通时回退到同源网关，方便部署到非本机的场景。
+ */
+export async function fetchASR(audioBlob: Blob): Promise<string> {
+  let primaryErr: unknown = null
+  try {
+    return await postASR(ASR_URL, audioBlob)
+  } catch (err) {
+    primaryErr = err
+    console.warn('[ASR] 直连识别服务失败，尝试网关转发：', err)
+  }
+  try {
+    return await postASR(ASR_GATEWAY_URL, audioBlob)
+  } catch {
+    throw primaryErr ?? new Error('语音识别失败')
+  }
 }
 
 const TTS_URL = 'http://127.0.0.1:9000/tts-stream'
