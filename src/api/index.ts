@@ -129,12 +129,23 @@ export async function chatStream(
   }
 }
 
-// ==================== 语音识别（ASR） ====================
-// 本地 faster-whisper 服务，默认端口 9001
-// （脚本位置：E:\AIXiaoNuan\tools_other\asr_server.py，启动后监听 9001）
-export const ASR_URL = 'http://127.0.0.1:9001/asr'
-// 备用通道：同源 /api/asr 经 Vite 代理到智能体网关(8001)，再由网关转发到 ASR 服务
+// ==================== 语音链路（ASR / TTS） ====================
+// 后台为 YYA 时，语音请求一律走 YYA 网关 /api/*（→ 8001），由网关再访问
+// ASR(:9001) / TTS(:9000) 服务。浏览器不直连这些本地服务，
+// 这样 dev 代理与生产 nginx 行为一致，也便于统一鉴权与排查。
 const ASR_GATEWAY_URL = '/api/asr'
+const TTS_GATEWAY_URL = '/api/tts-stream'
+
+// 兜底直连地址：仅当网关还没有对应路由（YYA 未重启加载新代码）时临时使用
+const ASR_DIRECT_URL = 'http://127.0.0.1:9001/asr'
+const TTS_DIRECT_URL = 'http://127.0.0.1:9000/tts-stream'
+
+export const ASR_URL = ASR_GATEWAY_URL
+export const TTS_URL = TTS_GATEWAY_URL
+
+type AsrResult =
+  | { ok: true; text: string }
+  | { ok: false; status: number | null; message: string }
 
 function guessAudioExt(blob: Blob): string {
   const type = blob.type || ''
@@ -145,43 +156,51 @@ function guessAudioExt(blob: Blob): string {
   return 'webm'
 }
 
-async function postASR(url: string, audioBlob: Blob): Promise<string> {
-  const formData = new FormData()
-  formData.append('file', audioBlob, `voice.${guessAudioExt(audioBlob)}`)
-  const resp = await fetch(url, { method: 'POST', body: formData })
+async function postASR(url: string, audioBlob: Blob): Promise<AsrResult> {
+  let resp: Response
+  try {
+    const formData = new FormData()
+    formData.append('file', audioBlob, `voice.${guessAudioExt(audioBlob)}`)
+    resp = await fetch(url, { method: 'POST', body: formData })
+  } catch (e) {
+    // 网络不通 / 服务未启动 / 跨域被拦
+    return { ok: false, status: null, message: e instanceof Error ? e.message : String(e) }
+  }
+
   if (!resp.ok) {
-    throw new Error(`ASR 服务返回 ${resp.status}`)
+    return { ok: false, status: resp.status, message: `ASR 服务返回 ${resp.status}` }
   }
   const data = await resp.json()
-  if (data?.error) throw new Error(String(data.error))
-  if (typeof data?.text !== 'string') throw new Error('ASR 返回格式异常')
-  return data.text.trim()
+  if (data?.error) return { ok: false, status: null, message: String(data.error) }
+  if (typeof data?.text !== 'string') {
+    return { ok: false, status: null, message: 'ASR 返回格式异常' }
+  }
+  return { ok: true, text: data.text.trim() }
 }
 
-/**
- * 语音转文字。
- * 优先直连本地 ASR 服务（与 TTS 一样走 127.0.0.1，服务已允许跨域）；
- * 直连不通时回退到同源网关，方便部署到非本机的场景。
- */
+/** 语音转文字：优先 YYA 网关，网关缺少路由时兜底直连本地识别服务 */
 export async function fetchASR(audioBlob: Blob): Promise<string> {
-  let primaryErr: unknown = null
-  try {
-    return await postASR(ASR_URL, audioBlob)
-  } catch (err) {
-    primaryErr = err
-    console.warn('[ASR] 直连识别服务失败，尝试网关转发：', err)
+  const viaGateway = await postASR(ASR_GATEWAY_URL, audioBlob)
+  if (viaGateway.ok) return viaGateway.text
+
+  // 404 说明这台 YYA 还没加载 /api/asr 路由（通常是没有重启），临时直连兜底
+  if (viaGateway.status === 404) {
+    console.warn('[ASR] 网关缺少 /api/asr 路由，临时直连本地识别服务，建议重启 YYA')
+    const direct = await postASR(ASR_DIRECT_URL, audioBlob)
+    if (direct.ok) return direct.text
+    throw new Error(direct.message)
   }
-  try {
-    return await postASR(ASR_GATEWAY_URL, audioBlob)
-  } catch {
-    throw primaryErr ?? new Error('语音识别失败')
-  }
+
+  throw new Error(viaGateway.message)
 }
 
-const TTS_URL = 'http://127.0.0.1:9000/tts-stream'
-
+/** 语音播报地址：首选 YYA 网关，失败时由调用方回退到 getTtsFallbackUrl */
 export function getTtsUrl(text: string): string {
-  return `${TTS_URL}?text=${encodeURIComponent(text)}`
+  return `${TTS_GATEWAY_URL}?text=${encodeURIComponent(text)}`
+}
+
+export function getTtsFallbackUrl(text: string): string {
+  return `${TTS_DIRECT_URL}?text=${encodeURIComponent(text)}`
 }
 
 // ==================== 智能决策建议 API ====================

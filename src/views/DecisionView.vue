@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
-import { chatStream, fetchASR, getTtsUrl, fetchDecisionSummary, fetchCurrentThresholds, sendCommand, fetchDecisionLogs, type DecisionSummaryData, type CurrentThresholdsData, type CurrentThresholdItem, type DecisionLogItem } from '../api'
+import { chatStream, fetchASR, getTtsUrl, getTtsFallbackUrl, fetchDecisionSummary, fetchCurrentThresholds, sendCommand, fetchDecisionLogs, type DecisionSummaryData, type CurrentThresholdsData, type CurrentThresholdItem, type DecisionLogItem } from '../api'
 import { useDeviceStore } from '../stores/devices'
 
 marked.setOptions({ breaks: true, gfm: true })
@@ -252,6 +252,8 @@ const isRecording = ref(false)
 const isTranscribing = ref(false)
 const recordSeconds = ref(0)
 const showEmpty = ref(true)
+// 语音播报开关，默认关闭（不自动朗读 AI 回复）
+const ttsEnabled = ref(false)
 
 const messagesContainer = ref<HTMLDivElement>()
 const textareaRef = ref<HTMLTextAreaElement>()
@@ -286,42 +288,54 @@ function showToast(msg: string, duration = 2000) {
   }, duration)
 }
 
-function playTTS(text: string) {
-  if (!text) return
-  if (currentAudio) {
-    currentAudio.pause()
-    currentAudio.src = ''
-    URL.revokeObjectURL(currentAudio.src)
-    currentAudio = null
-  }
-  fetch(getTtsUrl(text))
-    .then(res => {
-      if (!res.ok) throw new Error('TTS请求失败')
-      return res.blob()
-    })
-    .then(blob => {
-      const url = URL.createObjectURL(blob)
-      const audio = new Audio(url)
+function stopCurrentAudio() {
+  if (!currentAudio) return
+  const url = currentAudio.src
+  currentAudio.pause()
+  currentAudio.src = ''
+  if (url) URL.revokeObjectURL(url)
+  currentAudio = null
+}
+
+/** 语音播报：网关优先，网关不可用时回退直连 TTS 服务 */
+async function playTTS(text: string) {
+  if (!ttsEnabled.value || !text) return
+  stopCurrentAudio()
+
+  for (const url of [getTtsUrl(text), getTtsFallbackUrl(text)]) {
+    try {
+      const res = await fetch(url)
+      if (!res.ok) continue
+      const blob = await res.blob()
+      if (!blob.size) continue
+
+      const objectUrl = URL.createObjectURL(blob)
+      const audio = new Audio(objectUrl)
       currentAudio = audio
-      audio.play().catch(() => {})
       audio.onended = () => {
-        URL.revokeObjectURL(url)
+        URL.revokeObjectURL(objectUrl)
         if (currentAudio === audio) currentAudio = null
       }
-    })
-    .catch(() => {})
+      // 浏览器自动播放策略可能拒绝播放，这里不抛错，避免误触发回退地址
+      audio.play().catch(() => {})
+      return
+    } catch {
+      // 换下一个地址重试；两个都失败就静默跳过，不打断对话
+    }
+  }
+}
+
+function toggleTts() {
+  ttsEnabled.value = !ttsEnabled.value
+  if (!ttsEnabled.value) stopCurrentAudio()
+  showToast(ttsEnabled.value ? '语音播报已开启' : '语音播报已关闭')
 }
 
 async function sendMessage() {
   const text = inputText.value.trim()
   if (!text || isStreaming.value) return
 
-  if (currentAudio) {
-    currentAudio.pause()
-    currentAudio.src = ''
-    URL.revokeObjectURL(currentAudio.src)
-    currentAudio = null
-  }
+  stopCurrentAudio()
 
   inputText.value = ''
   showEmpty.value = false
@@ -481,7 +495,7 @@ async function transcribeAudio(blob: Blob) {
     await sendMessage()
   } catch (e) {
     console.error('[ASR] 语音识别失败：', e)
-    showToast('语音识别失败，请确认 ASR 服务(127.0.0.1:9001)已启动', 3200)
+    showToast('语音识别失败，请确认 YYA 网关(8001)与 ASR 服务已启动', 3200)
   } finally {
     isTranscribing.value = false
   }
@@ -494,11 +508,8 @@ onBeforeUnmount(() => {
     mediaRecorder.stop()
   }
   releaseMicStream()
+  stopCurrentAudio()
   if (toastTimer) clearTimeout(toastTimer)
-  if (currentAudio) {
-    currentAudio.pause()
-    currentAudio.src = ''
-  }
 })
 </script>
 
@@ -813,6 +824,13 @@ onBeforeUnmount(() => {
               ➤
             </button>
           </div>
+          <button
+            :class="['audio-btn', { active: ttsEnabled }]"
+            :title="ttsEnabled ? '语音播报已开启，点击关闭' : '语音播报已关闭，点击开启'"
+            @click="toggleTts"
+          >
+            {{ ttsEnabled ? '🔊' : '🔇' }}
+          </button>
           <button
             :class="['mic-btn', { recording: isRecording, processing: isTranscribing }]"
             :disabled="isStreaming || isTranscribing"
@@ -1398,6 +1416,25 @@ onBeforeUnmount(() => {
 }
 .send-btn:hover { background: var(--primary-hover); }
 .send-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+.audio-btn {
+  width: 40px; height: 40px;
+  border: none; border-radius: 50%;
+  background: #f1f3f5;
+  color: #90a4ae;
+  font-size: 18px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+.audio-btn:hover { background: #e3f2fd; color: #1565c0; }
+.audio-btn.active {
+  background: #e8f5e9;
+  color: var(--primary);
+}
 
 .mic-btn {
   width: 40px; height: 40px;

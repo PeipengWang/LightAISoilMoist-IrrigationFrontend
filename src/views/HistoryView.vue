@@ -33,12 +33,6 @@ const queryError = ref('')
 type ViewMode = 'chart' | 'table'
 const viewMode = ref<ViewMode>('table')
 
-// ==================== 图表缺失数据 ====================
-interface GapSegment {
-  start: number
-  end: number
-}
-
 // ==================== 分页 ====================
 const currentPage = ref(1)
 const pageSize = ref(10)
@@ -230,23 +224,6 @@ function formatTime(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-function detectGaps(prop: string): GapSegment[] {
-  const gaps: GapSegment[] = []
-  const MAX_GAP_COUNT = 20
-  for (let i = 1; i < records.value.length; i++) {
-    const prev = records.value[i - 1].values[prop]
-    const curr = records.value[i].values[prop]
-    if ((prev === undefined || isNaN(prev)) !== (curr === undefined || isNaN(curr))) {
-      if (gaps.length === 0 || gaps[gaps.length - 1].end !== i - 1) {
-        gaps.push({ start: i - 1, end: i })
-      } else {
-        gaps[gaps.length - 1].end = i
-      }
-    }
-  }
-  return gaps.filter(g => g.end - g.start <= MAX_GAP_COUNT)
-}
-
 // ==================== 图表渲染 ====================
 function renderChart() {
   if (chartInstance) { chartInstance.destroy(); chartInstance = null }
@@ -267,13 +244,13 @@ function renderChart() {
 
   const xTickCallback = (() => {
     if (totalMs <= 86400000) {
-      return (val: string | number, index: number) => {
+      return (_val: string | number, index: number) => {
         const label = labels[index]
         return label ? label.slice(11, 16) : ''
       }
     }
     if (totalMs <= 604800000) {
-      return (val: string | number, index: number) => {
+      return (_val: string | number, index: number) => {
         const label = labels[index]
         return label ? label.slice(5, 10) : ''
       }

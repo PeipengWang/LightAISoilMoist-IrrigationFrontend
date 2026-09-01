@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDeviceStore } from '../stores/devices'
 
@@ -205,13 +205,14 @@ function resetSseCount() {
   store.sseCount = 0
 }
 
-// 推送延迟计算
-const lastSseTime = ref(0)
-setInterval(() => {
+// 推送延迟计算（组件卸载时清理，避免定时器泄漏）
+const latencyTimer = setInterval(() => {
   if (store.lastSseTime && store.online) {
     store.pushLatency = Date.now() - store.lastSseTime
   }
 }, 1000)
+
+onBeforeUnmount(() => clearInterval(latencyTimer))
 
 const lastSseTimeStr = computed(() => {
   if (!store.lastSseTime) return '--'

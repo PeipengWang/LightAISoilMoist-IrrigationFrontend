@@ -16,6 +16,8 @@ export const useDeviceStore = defineStore('devices', () => {
   const statusText = ref('在线')
   const lastSseTime = ref(0)
   const sseCount = ref(0)
+  // 最近一次推送距今的延迟(ms)，由 RealTimeView 每秒刷新
+  const pushLatency = ref(0)
 
   let sseConnection: SSEConnection | null = null
   let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -134,6 +136,7 @@ export const useDeviceStore = defineStore('devices', () => {
     statusText,
     lastSseTime,
     sseCount,
+    pushLatency,
     loadDevices,
     refreshLatest,
     startSSE,
