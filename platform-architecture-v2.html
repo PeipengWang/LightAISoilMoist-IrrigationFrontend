@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>智慧种植平台 · 数据流动架构图</title>
+<style>
+  :root{
+    --green:#37d67a; --teal:#27c5c5; --gold:#ffcf5c; --violet:#9b8cff;
+    --ink:#eafff2; --muted:#9fc7b3;
+    --glass:rgba(11,42,30,.66); --glassb:rgba(55,214,122,.30);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+    background:
+      radial-gradient(1000px 620px at 18% -8%,rgba(39,197,197,.16),transparent 60%),
+      radial-gradient(1100px 700px at 92% 4%,rgba(155,140,255,.14),transparent 60%),
+      radial-gradient(900px 700px at 50% 120%,rgba(55,214,122,.14),transparent 60%),
+      linear-gradient(160deg,#04150f,#072519 55%,#04140e);
+    color:var(--ink); display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  }
+  header{padding:16px 22px 8px;text-align:center;flex:0 0 auto}
+  .badge{font-size:11px;letter-spacing:2px;color:var(--green);border:1px solid var(--glassb);
+    border-radius:999px;padding:4px 13px;background:rgba(55,214,122,.07)}
+  h1{font-size:clamp(19px,2.6vw,28px);margin:10px 0 4px;font-weight:800;
+    background:linear-gradient(90deg,#bdffd9,var(--green) 45%,var(--teal));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--muted);font-size:12.5px;margin:0}
+
+  .legend{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;padding:4px 0 6px;flex:0 0 auto}
+  .legend span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+  .dot{width:10px;height:10px;border-radius:50%}
+  .dot.g{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .dot.t{background:var(--teal);box-shadow:0 0 8px var(--teal)}
+  .dot.gd{background:var(--gold);box-shadow:0 0 8px var(--gold)}
+
+  .fitwrap{position:relative;flex:1 1 auto;min-height:0;overflow:hidden}
+  .stage{position:absolute;left:50%;top:50%;width:1100px;height:840px;
+    transform:translate(-50%,-50%);transform-origin:center center}
+  svg.layer{position:absolute;inset:0;width:1100px;height:840px;overflow:visible}
+
+  .node{position:absolute;background:var(--glass);border:1px solid var(--glassb);
+    border-radius:16px;padding:12px 14px;backdrop-filter:blur(7px);
+    box-shadow:0 10px 36px rgba(0,0,0,.38),inset 0 0 26px rgba(55,214,122,.05);
+    opacity:0;transform:translateY(10px) scale(.985);transition:.6s cubic-bezier(.2,.7,.3,1)}
+  .node.in{opacity:1;transform:none}
+  /* 鼠标悬停：轻微放大并突出 */
+  .node.in:hover{transform:scale(1.06);z-index:6;cursor:pointer;
+    border-color:var(--green);
+    box-shadow:0 16px 48px rgba(0,0,0,.5),inset 0 0 30px rgba(55,214,122,.14),0 0 0 1px rgba(55,214,122,.4);
+    transition:.22s cubic-bezier(.2,.7,.3,1)}
+  .node .hd{display:flex;align-items:center;gap:10px}
+  .node .ic{flex:0 0 40px;height:40px;border-radius:11px;display:grid;place-items:center;font-size:22px;
+    background:linear-gradient(135deg,rgba(55,214,122,.20),rgba(39,197,197,.12));border:1px solid var(--glassb)}
+  .node .tt{font-size:15px;font-weight:800;line-height:1.2}
+  .node .tg{font-size:10.5px;font-weight:700;color:#04140e;background:var(--green);border-radius:6px;padding:2px 7px;margin-left:auto}
+  .node .tg.t{background:var(--teal)} .node .tg.g{background:var(--gold)} .node .tg.v{background:var(--violet)}
+  .node .sb{font-size:11.5px;color:var(--teal);margin:5px 0 8px}
+  .node .items{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:11px;color:var(--ink);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);
+    border-radius:7px;padding:3px 8px}
+  .chip.hi{background:rgba(255,207,92,.13);border-color:rgba(255,207,92,.4);color:var(--gold)}
+
+  /* 硬件卡内部子设备 */
+  .devrow{display:flex;gap:10px;margin-top:10px}
+  .dev{flex:1;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:11px;
+    padding:9px 8px;text-align:center}
+  .dev .di{font-size:20px}
+  .dev .dt{font-size:10.5px;color:var(--muted);margin-top:3px}
+  .devcost{margin-top:9px;font-size:11px;color:var(--gold);text-align:center}
+
+  .tip{position:absolute;font-size:10.5px;color:var(--muted);background:rgba(4,20,14,.7);
+    border:1px solid var(--glassb);border-radius:7px;padding:3px 7px;white-space:nowrap}
+
+  footer{flex:0 0 auto;text-align:center;color:var(--muted);font-size:11px;padding:6px 12px 10px;line-height:1.6}
+
+  /* 全屏按钮 */
+  .fsbtn{position:fixed;top:14px;right:18px;z-index:50;display:inline-flex;align-items:center;gap:7px;
+    font-family:inherit;font-size:13px;font-weight:700;color:var(--ink);cursor:pointer;
+    background:var(--glass);border:1px solid var(--glassb);border-radius:11px;padding:9px 14px;
+    backdrop-filter:blur(7px);box-shadow:0 6px 22px rgba(0,0,0,.35);transition:.25s;user-select:none}
+  .fsbtn:hover{border-color:var(--green);box-shadow:0 6px 26px rgba(55,214,122,.28);transform:translateY(-1px)}
+  .fsbtn .fi{font-size:16px;line-height:1}
+  /* 全屏时按钮更醒目 */
+  body:fullscreen .fsbtn,body:-webkit-full-screen .fsbtn{background:rgba(11,42,30,.82);top:18px;right:22px}
+  body:fullscreen header,body:-webkit-full-screen header{padding-top:26px}
+</style>
+</head>
+<body>
+<button class="fsbtn" id="fsBtn" title="全屏展示 / 退出全屏（F 键）" aria-label="全屏切换">
+  <span class="fi" id="fsIcon">⛶</span><span id="fsLabel">全屏展示</span>
+</button>
+<header>
+  <span class="badge">智慧农业 · 参赛作品架构演示</span>
+  <h1>基于智能感知的土壤环境监测与决策平台</h1>
+  <p class="sub">硬件采集 → 云端汇聚 → 平台可视化 → 场景化智能决策 → 人工干预执行（指令回传设备，形成灌溉控制闭环）</p>
+</header>
+
+<div class="legend">
+  <span><i class="dot g"></i> 传感数据流（设备→云→平台→决策）</span>
+  <span><i class="dot t"></i> 决策建议流（决策→执行 / 平台）</span>
+  <span><i class="dot gd"></i> 控制指令流（执行→设备灌溉）</span>
+</div>
+
+<div class="fitwrap" id="fitwrap">
+  <div class="stage" id="stage">
+    <svg class="layer" viewBox="0 0 1100 840" id="svg">
+      <defs>
+        <linearGradient id="gGreen" x1="0" y1="1" x2="0" y2="0">
+          <stop offset="0" stop-color="#1fae5e"/><stop offset="1" stop-color="#37d67a"/></linearGradient>
+        <linearGradient id="gTeal" x1="0" y1="1" x2="0" y2="0">
+          <stop offset="0" stop-color="#1f9c9c"/><stop offset="1" stop-color="#27c5c5"/></linearGradient>
+        <linearGradient id="gGold" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffcf5c"/><stop offset="1" stop-color="#ff9d3c"/></linearGradient>
+        <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation="3.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <g id="wires"></g>
+      <g id="parts"></g>
+    </svg>
+    <!-- 节点由 JS 渲染 -->
+  </div>
+</div>
+
+<footer>🍎 立足本地化种植场景 · 用数字化、智能化技术赋能传统种植 · 数据感知 → 智能分析 → 精准研判 → 科学决策 → 闭环管控</footer>
+
+<script>
+(function(){
+  const NS="http://www.w3.org/2000/svg";
+  const stage=document.getElementById('stage');
+  const svg=document.getElementById('svg');
+  const wiresG=document.getElementById('wires');
+  const partsG=document.getElementById('parts');
+  const fitwrap=document.getElementById('fitwrap');
+
+  // ---------- 节点定义（x,y 为卡片左上角；w,h 尺寸）----------
+  const nodes=[
+    {id:'rag',x:30,y:55,w:175,h:82,ic:'📚',tt:'沂源山地资料库',tg:'RAG',tgc:'v',
+      sb:'本地化知识支撑',items:['苹果种植资料','山地评估库'],reveal:0},
+    {id:'wx',x:895,y:55,w:185,h:82,ic:'🌦️',tt:'气象数据',tg:'外部输入',tgc:'t',
+      sb:'未来数日降雨预报',items:['降雨预警','温湿度趋势'],reveal:0},
+    {id:'ai',x:300,y:55,w:360,h:124,ic:'🧠',tt:'场景化智能决策',tg:'最大创新点',tgc:'',
+      sb:'Lagraphn + DeepSeek 智能体',items:['分周期专属阈值','RAG 向量检索','自动评估/农事建议'],reveal:1},
+    {id:'exec',x:790,y:250,w:215,h:118,ic:'🎛️',tt:'人工干预与执行',tg:'实用兼顾',tgc:'',
+      sb:'智能化 + 可追溯',items:['手动灌溉控制','阈值自定义','决策日志留存'],reveal:2},
+    {id:'plat',x:300,y:268,w:360,h:124,ic:'📊',tt:'SpringBoot + Vue3 平台',tg:'数字化管控',tgc:'',
+      sb:'前后端分离 · 可视化',items:['实时监测','历史回溯','趋势曲线','📱 移动端'],reveal:3},
+    {id:'cloud',x:340,y:458,w:280,h:96,ic:'☁️',tt:'OneNet 云平台',tg:'无线上云',tgc:'t',
+      sb:'中国移动 · 多设备免费接入',items:['4G 自动上云','Kafka+InfluxDB 规划'],reveal:4},
+    {id:'hw',x:180,y:636,w:600,h:166,ic:'🌱',tt:'土壤环境智能采集终端',tg:'低成本采集',tgc:'g',
+      sb:'全天候精准采集 · 成本 < ¥200',devs:[
+        {i:'🧪',t:'氮/磷/钾养分'},{i:'💧',t:'PH · 土壤湿度'},{i:'🌡️',t:'温度 · 光照'}
+      ],reveal:5}
+  ];
+
+  // ---------- 连线（d 方向 = 数据流动方向）----------
+  const wires=[
+    {id:'w1',d:'M205,96 C 245,102 272,110 300,118',color:'green',n:2,speed:0.10},
+    {id:'w2',d:'M895,96 C 835,102 720,110 660,118',color:'green',n:2,speed:0.10},
+    {id:'w3a',d:'M352,640 C 382,600 422,576 452,556',color:'green',n:2,speed:0.14},
+    {id:'w3b',d:'M480,640 L480,556',color:'green',n:2,speed:0.16},
+    {id:'w3c',d:'M608,640 C 578,600 538,576 508,556',color:'green',n:2,speed:0.14},
+    {id:'w4',d:'M480,554 L480,392',color:'green',n:3,speed:0.16},
+    {id:'w5',d:'M480,392 L480,178',color:'green',n:3,speed:0.16},
+    {id:'w6',d:'M660,132 C 720,152 758,212 790,278',color:'teal',n:2,speed:0.12},
+    {id:'w7',d:'M895,368 C 900,520 720,648 500,716',color:'gold',n:3,speed:0.10},
+    {id:'w8',d:'M800,312 C 742,318 702,324 662,332',color:'teal',n:1,speed:0.12}
+  ];
+  const colorMap={green:'url(#gGreen)',teal:'url(#gTeal)',gold:'url(#gGold)',
+                  gc:{green:'#37d67a',teal:'#27c5c5',gold:'#ffcf5c'}};
+
+  // 绘制连线
+  const pathEls={};
+  wires.forEach(w=>{
+    const p=document.createElementNS(NS,'path');
+    p.setAttribute('d',w.d);
+    p.setAttribute('fill','none');
+    p.setAttribute('stroke',colorMap[w.color]);
+    p.setAttribute('stroke-width','2.4');
+    p.setAttribute('stroke-opacity','0.5');
+    p.setAttribute('stroke-linecap','round');
+    wiresG.appendChild(p);
+    pathEls[w.id]=p;
+  });
+
+  // 渲染节点
+  nodes.forEach(n=>{
+    const el=document.createElement('div');
+    el.className='node'; el.id='n_'+n.id;
+    el.style.left=n.x+'px'; el.style.top=n.y+'px';
+    el.style.width=n.w+'px'; el.style.height=n.h+'px';
+    let inner=`<div class="hd"><div class="ic">${n.ic}</div>
+      <div class="tt">${n.tt}</div><div class="tg ${n.tgc}">${n.tg}</div></div>
+      <div class="sb">${n.sb}</div>`;
+    if(n.devs){
+      inner+=`<div class="devrow">`+n.devs.map(d=>`<div class="dev"><div class="di">${d.i}</div><div class="dt">${d.t}</div></div>`).join('')+`</div>`;
+      inner+=`<div class="devcost">💡 单套成本 &lt; ¥200（市面同类 ≥ ¥1500）</div>`;
+    }else{
+      inner+=`<div class="items">`+n.items.map(t=>`<span class="chip">${t}</span>`).join('')+`</div>`;
+    }
+    el.innerHTML=inner;
+    stage.appendChild(el);
+  });
+
+  // 箭头小标
+  function tip(x,y,text){
+    const t=document.createElement('div');t.className='tip';t.textContent=text;
+    t.style.left=(x)+'px';t.style.top=(y)+'px';t.style.transform='translate(-50%,-50%)';
+    stage.appendChild(t);
+  }
+  tip(900,250,'气象 → 决策');
+  tip(120,250,'资料库 → 决策');
+  tip(700,560,'控制指令回传设备');
+
+  // ---------- 数据粒子动画 ----------
+  const flows=[];
+  wires.forEach(w=>{
+    const path=pathEls[w.id];
+    const len=path.getTotalLength();
+    const col=colorMap.gc[w.color];
+    const parts=[];
+    for(let k=0;k<w.n;k++){
+      const c=document.createElementNS(NS,'circle');
+      c.setAttribute('r', w.color==='gold'?4.2:3.6);
+      c.setAttribute('fill',col);
+      c.setAttribute('filter','url(#glow)');
+      partsG.appendChild(c);
+      parts.push(c);
+    }
+    flows.push({path,len,parts,col,speed:w.speed,base:Math.random()});
+  });
+
+  let t0=performance.now();
+  function frame(now){
+    const t=(now-t0)/1000;
+    flows.forEach(f=>{
+      f.parts.forEach((c,k)=>{
+        let p=((t*f.speed)+f.base+k/f.parts.length)%1;
+        const pt=f.path.getPointAtLength(p*f.len);
+        c.setAttribute('cx',pt.x); c.setAttribute('cy',pt.y);
+        c.setAttribute('opacity', 0.35+0.65*Math.sin(p*Math.PI));
+      });
+    });
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ---------- 节点依次点亮（体现"搭建/数据贯通"）----------
+  const order=nodes.slice().sort((a,b)=>a.reveal-b.reveal);
+  order.forEach((n,i)=>{
+    setTimeout(()=>{ document.getElementById('n_'+n.id).classList.add('in'); }, 350+i*420);
+  });
+
+  // ---------- 自适应缩放 ----------
+  function fit(){
+    const aw=fitwrap.clientWidth, ah=fitwrap.clientHeight;
+    const s=Math.min(aw/1100, ah/840, 1.06);
+    stage.style.transform=`translate(-50%,-50%) scale(${s})`;
+  }
+  window.addEventListener('resize',fit); fit();
+
+  // ---------- 全屏切换（大屏展示）----------
+  const fsBtn=document.getElementById('fsBtn');
+  const fsIcon=document.getElementById('fsIcon');
+  const fsLabel=document.getElementById('fsLabel');
+  function rootEl(){ return document.fullscreenElement || document.webkitFullscreenElement || null; }
+  function syncFsUI(){
+    const on=!!rootEl();
+    fsIcon.textContent = on ? '⛗' : '⛶';
+    fsLabel.textContent = on ? '退出全屏' : '全屏展示';
+  }
+  function toggleFs(){
+    if(rootEl()){ (document.exitFullscreen||document.webkitExitFullscreen).call(document); }
+    else {
+      const el=document.documentElement; // 整个页面进入全屏
+      (el.requestFullscreen||el.webkitRequestFullscreen).call(el);
+    }
+  }
+  fsBtn.addEventListener('click',toggleFs);
+  document.addEventListener('fullscreenchange',()=>{ syncFsUI(); setTimeout(fit,60); });
+  document.addEventListener('webkitfullscreenchange',()=>{ syncFsUI(); setTimeout(fit,60); });
+  // F 键快捷切换
+  window.addEventListener('keydown',e=>{ if(e.key==='f'||e.key==='F'){ e.preventDefault(); toggleFs(); } });
+  syncFsUI();
+})();
+</script>
+</body>
+</html>

@@ -27,6 +27,12 @@ const router = createRouter({
           meta: { title: '智能决策管理' },
         },
         {
+          path: 'images',
+          name: 'Images',
+          component: () => import('../views/ImageView.vue'),
+          meta: { title: '图片管理分析' },
+        },
+        {
           path: 'thresholds',
           name: 'Thresholds',
           component: () => import('../views/ThresholdConfigView.vue'),

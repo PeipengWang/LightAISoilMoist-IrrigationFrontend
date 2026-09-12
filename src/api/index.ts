@@ -416,6 +416,275 @@ export async function sendCommand(deviceName: string, identifier: string, value:
   return resp.json()
 }
 
+// ==================== 图片管理 / 智能分析 API ====================
+// 对应后端 ImageController(/api/images)、ImageFolderController(/api/image-folders)、
+// ImageAnalysisController(/api/images/{id}/analyze...)，走默认 /api 代理到 8086。
+
+export interface ImageRecord {
+  id: number
+  originalName: string
+  storedName: string
+  relativePath: string
+  folderId: number | null
+  contentType: string | null
+  size: number
+  storageType: string
+  remark: string | null
+  createdAt: string
+  // B 类 · EXIF 采集元数据（可空）
+  width: number | null
+  height: number | null
+  format: string | null
+  cameraMake: string | null
+  cameraModel: string | null
+  dateTaken: string | null
+  gpsLatitude: number | null
+  gpsLongitude: number | null
+  gpsAltitude: number | null
+  // C 类 · 田块领域上下文（可空）
+  plotCode: string | null
+  cropType: string | null
+  soilType: string | null
+  growthStage: string | null
+  irrigationStatus: string | null
+  samplingDepth: string | null
+  captureCondition: string | null
+  operator: string | null
+  deviceId: string | null
+  // D 类 · 分析就绪
+  analyzed: boolean
+  analysisStatus: string | null
+}
+
+export interface ImageFolder {
+  id: number
+  name: string
+  parentId: number | null
+  createdAt: string
+}
+
+export interface ImageAnalysisItem {
+  id: number
+  imageId: number
+  sessionName: string | null
+  prompt: string | null
+  conclusion: string | null
+  status: string | null
+  createdAt: string
+}
+
+export interface ImagePageData {
+  content: ImageRecord[]
+  page: number
+  size: number
+  totalElements: number
+  totalPages: number
+}
+
+export interface UploadImagePayload {
+  file: File
+  folderId?: number | null
+  remark?: string
+  plotCode?: string
+  cropType?: string
+  soilType?: string
+  growthStage?: string
+  irrigationStatus?: string
+  samplingDepth?: string
+  captureCondition?: string
+  operator?: string
+  deviceId?: string
+}
+
+/** 上传图片：multipart 表单（file + 可选目录/备注/田块领域上下文） */
+export async function uploadImage(payload: UploadImagePayload): Promise<ApiResult<ImageRecord>> {
+  const fd = new FormData()
+  fd.append('file', payload.file)
+  if (payload.folderId != null) fd.append('folderId', String(payload.folderId))
+  const textFields = [
+    'remark', 'plotCode', 'cropType', 'soilType', 'growthStage',
+    'irrigationStatus', 'samplingDepth', 'captureCondition', 'operator', 'deviceId',
+  ] as const
+  for (const key of textFields) {
+    const v = payload[key]
+    if (v && String(v).trim()) fd.append(key, String(v).trim())
+  }
+  const resp = await fetch(`${BASE}/images/upload`, { method: 'POST', body: fd })
+  return resp.json()
+}
+
+/** 图片分页列表（page 为 0-based，folderId 为空返回全部） */
+export async function fetchImages(params: {
+  folderId?: number | null
+  page?: number
+  size?: number
+} = {}): Promise<ApiResult<ImagePageData>> {
+  const sp = new URLSearchParams()
+  if (params.folderId != null) sp.set('folderId', String(params.folderId))
+  if (params.page !== undefined) sp.set('page', String(params.page))
+  if (params.size !== undefined) sp.set('size', String(params.size))
+  const qs = sp.toString()
+  const resp = await fetch(`${BASE}/images${qs ? '?' + qs : ''}`)
+  return resp.json()
+}
+
+/** 图片文件预览地址（浏览器 <img> 可直接使用） */
+export function imageFileUrl(id: number): string {
+  return `${BASE}/images/${id}/file`
+}
+
+/** 目录列表（parentId 为空返回全部目录） */
+export async function fetchImageFolders(parentId?: number | null): Promise<ApiResult<ImageFolder[]>> {
+  const sp = new URLSearchParams()
+  if (parentId != null) sp.set('parentId', String(parentId))
+  const qs = sp.toString()
+  const resp = await fetch(`${BASE}/image-folders${qs ? '?' + qs : ''}`)
+  return resp.json()
+}
+
+/** 新建目录（parentId 为空则为根目录） */
+export async function createImageFolder(name: string, parentId?: number | null): Promise<ApiResult<ImageFolder>> {
+  const sp = new URLSearchParams()
+  sp.set('name', name)
+  if (parentId != null) sp.set('parentId', String(parentId))
+  const resp = await fetch(`${BASE}/image-folders?${sp.toString()}`, { method: 'POST' })
+  return resp.json()
+}
+
+/** 删除目录（其下图片转为未分类，不删除图片文件） */
+export async function deleteImageFolder(id: number): Promise<ApiResult<null>> {
+  const resp = await fetch(`${BASE}/image-folders/${id}`, { method: 'DELETE' })
+  return resp.json()
+}
+
+/** 某张图片的全部分析记录（按时间倒序） */
+export async function fetchImageAnalyses(imageId: number): Promise<ApiResult<ImageAnalysisItem[]>> {
+  const resp = await fetch(`${BASE}/images/${imageId}/analyses`)
+  return resp.json()
+}
+
+/** 删除单张图片：级联删除磁盘文件与关联分析结论，返回 null */
+export async function deleteImage(id: number): Promise<ApiResult<null>> {
+  const resp = await fetch(`${BASE}/images/${id}`, { method: 'DELETE' })
+  return resp.json()
+}
+
+/** 批量删除图片，ids 为图片 ID 数组，返回实际删除数量 */
+export async function batchDeleteImages(ids: number[]): Promise<ApiResult<number>> {
+  const resp = await fetch(`${BASE}/images/batch-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  })
+  return resp.json()
+}
+
+/** 单张图片分类归档：folderId 为 null 表示移出到未分类 */
+export async function archiveImage(id: number, folderId?: number | null): Promise<ApiResult<ImageRecord>> {
+  const sp = new URLSearchParams()
+  if (folderId != null) sp.set('folderId', String(folderId))
+  const qs = sp.toString()
+  const resp = await fetch(`${BASE}/images/${id}/folder${qs ? '?' + qs : ''}`, { method: 'PUT' })
+  return resp.json()
+}
+
+/** 批量归档图片到指定目录，folderId 为 null 表示移出到未分类，返回实际处理数量 */
+export async function batchArchiveImages(ids: number[], folderId?: number | null): Promise<ApiResult<number>> {
+  const resp = await fetch(`${BASE}/images/batch-move`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, folderId: folderId ?? null }),
+  })
+  return resp.json()
+}
+
+export interface AnalyzeStreamEvent {
+  chunk?: string
+  done?: boolean
+  full_response?: string
+  error?: string
+}
+
+/**
+ * 流式 AI 分析（SSE）：POST /api/images/{id}/analyze/stream
+ * 事件格式与后端 AgentAnalysisService 一致：
+ *   data:{"chunk":"..."} / data:{"done":true,"full_response":"..."} / data:{"error":"..."}
+ * 注意 Spring SseEmitter 的 data: 后无空格，解析时统一 trim 处理。
+ */
+export async function analyzeImageStream(
+  imageId: number,
+  prompt: string,
+  onChunk: (text: string) => void,
+  onDone: (full: string) => void,
+  onError: (err: string) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const sp = new URLSearchParams()
+  if (prompt.trim()) sp.set('prompt', prompt.trim())
+  const qs = sp.toString()
+
+  let resp: Response
+  try {
+    resp = await fetch(`${BASE}/images/${imageId}/analyze/stream${qs ? '?' + qs : ''}`, {
+      method: 'POST',
+      signal,
+    })
+  } catch (e) {
+    if (signal?.aborted) return
+    onError(e instanceof Error ? e.message : String(e))
+    return
+  }
+
+  if (!resp.ok || !resp.body) {
+    onError(`分析请求失败（HTTP ${resp.status}）`)
+    return
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data:')) continue
+        const json = trimmed.slice(5).trim()
+        if (!json) continue
+
+        let data: AnalyzeStreamEvent
+        try {
+          data = JSON.parse(json)
+        } catch {
+          continue
+        }
+
+        if (data.error) {
+          onError(data.error)
+          return
+        }
+        if (data.chunk) {
+          onChunk(data.chunk)
+        } else if (data.done) {
+          onDone(data.full_response || '')
+          return
+        }
+      }
+    }
+    // 流关闭但未收到显式 done 事件：交由调用方使用已累积文本
+    onDone('')
+  } catch (e) {
+    if (signal?.aborted) return
+    onError(e instanceof Error ? e.message : String(e))
+  }
+}
+
 export function createSSEConnection(
   onMessage: (data: Record<string, Record<string, { value: unknown; time: number; name?: string; unit?: string; mode?: string }>>) => void,
   onStatusChange: (online: boolean) => void
